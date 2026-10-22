@@ -349,3 +349,104 @@ def play_sound(frequency=700, duration=120):
     # Pygame mixer can play loaded sounds; this function is safe
     # when no audio assets are present.
     pass
+
+import io
+import math
+import struct
+import wave
+
+# Audio setup: generate sound without external files
+try:
+    pygame.mixer.init(frequency=22050, size=-16, channels=1, buffer=512)
+    AUDIO_AVAILABLE = True
+except pygame.error:
+    AUDIO_AVAILABLE = False
+
+sound_on = True
+ambience_channel = None
+
+
+def make_sound(duration, frequencies, volume=0.3, kind="tone"):
+    """Generate a sound procedurally using the standard library."""
+    sample_rate = 22050
+    total = int(sample_rate * duration)
+    frames = bytearray()
+
+    for i in range(total):
+        t = i / sample_rate
+        progress = i / max(total - 1, 1)
+
+        if kind == "ambience":
+            # Soft fade at the start and end for a smoother loop
+            fade = min(1.0, progress * 25, (1.0 - progress) * 25)
+            envelope = max(0.0, fade) * (
+                0.75 + 0.25 * math.sin(2 * math.pi * 0.25 * t)
+            )
+            value = sum(
+                math.sin(2 * math.pi * f * t) for f in frequencies
+            ) / len(frequencies)
+            value *= envelope * volume
+        else:
+            # Sonar chirp that falls in pitch and fades away
+            envelope = math.exp(-5 * progress)
+            start_f = frequencies[0]
+            end_f = frequencies[-1]
+            current_f = start_f + (end_f - start_f) * progress
+            value = math.sin(2 * math.pi * current_f * t)
+            value *= envelope * volume
+
+        sample = int(max(-1.0, min(1.0, value)) * 32767)
+        frames.extend(struct.pack("<h", sample))
+
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        wav.writeframes(frames)
+
+    return pygame.mixer.Sound(file=io.BytesIO(buffer.getvalue()))
+
+
+if AUDIO_AVAILABLE:
+    sonar_sound = make_sound(
+        0.55, [950, 320], volume=0.65
+    )
+    ambience_sound = make_sound(
+        4.0, [48, 61, 74], volume=0.20, kind="ambience"
+    )
+    sonar_sound.set_volume(0.65)
+    ambience_sound.set_volume(0.45)
+else:
+    sonar_sound = None
+    ambience_sound = None
+
+
+def play_sonar():
+    if AUDIO_AVAILABLE and sound_on:
+        sonar_sound.play()
+
+
+def start_ambience():
+    global ambience_channel
+
+    if AUDIO_AVAILABLE and sound_on and ambience_channel is None:
+        ambience_channel = ambience_sound.play(loops=-1)
+
+
+def stop_ambience():
+    global ambience_channel
+
+    if ambience_channel is not None:
+        ambience_channel.stop()
+        ambience_channel = None
+
+
+def update_audio():
+    if not AUDIO_AVAILABLE:
+        return
+
+    if sound_on and scene == "game" and not won and not lost:
+        start_ambience()
+    else:
+        stop_ambience()
