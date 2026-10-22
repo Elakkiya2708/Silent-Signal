@@ -1041,7 +1041,6 @@ while running:
             screen, "ENTER — Main menu     R — Restart",
             WIDTH // 2 - 190, 365, C["white"], SMALL
         )
-
     elif game.state == "quit":
         running = False
 
