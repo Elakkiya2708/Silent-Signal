@@ -637,7 +637,6 @@ while running:
             "2 - Destroy the facility and end the threat",
             245, 345, RED
         )
-
         if game.choice:
             text(
                 "Ending selected. Press ENTER for menu.",
