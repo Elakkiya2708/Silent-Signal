@@ -301,7 +301,10 @@ while running:
                     reset_game()
                     scene = "game"
                 elif sound_rect.collidepoint(event.pos):
-                    sound_on = not sound_on
+    sound_on = not sound_on
+
+    if not sound_on:
+        stop_ambience()
                 elif quit_rect.collidepoint(event.pos):
                     running = False
 
