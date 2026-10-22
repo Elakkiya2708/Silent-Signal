@@ -328,6 +328,7 @@ while running:
         update_audio()
         draw_game()
     else:
+        update_audio()
         draw_menu()
 
     pygame.display.flip()
