@@ -526,6 +526,7 @@ class Game:
                 WHITE, SMALL
             )
 
+
 game = Game()
 running = True
 while running:
