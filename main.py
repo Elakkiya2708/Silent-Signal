@@ -984,3 +984,49 @@ while running:
     pygame.display.flip()
 
 pygame.quit()
+
+    # Boss energy projectiles
+    for projectile in boss_projectiles:
+        pygame.draw.circle(
+            screen,
+            (255, 70, 80),
+            (int(projectile["x"]), int(projectile["y"])),
+            7
+        )
+
+    # Boss minions
+    for minion in boss_minions:
+        pygame.draw.rect(screen, PURPLE, minion)
+        pygame.draw.rect(screen, RED, minion, 2)
+
+    # Boss phase health bar
+    if boss:
+        bar_width = 300
+        bar_x = (WIDTH - bar_width) // 2
+        bar_y = HUD_HEIGHT + 8
+
+        pygame.draw.rect(
+            screen, (50, 15, 20),
+            (bar_x, bar_y, bar_width, 14)
+        )
+        pygame.draw.rect(
+            screen, RED,
+            (
+                bar_x, bar_y,
+                int(bar_width * max(0, boss_health) / 100),
+                14
+            )
+        )
+        pygame.draw.rect(
+            screen, WHITE,
+            (bar_x, bar_y, bar_width, 14), 1
+        )
+
+        phase_label = FONT.render(
+            f"THE HUNTER - PHASE {boss_phase}",
+            True, YELLOW
+        )
+        screen.blit(
+            phase_label,
+            (bar_x, bar_y + 18)
+        )
