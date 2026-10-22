@@ -653,6 +653,5 @@ while running:
         screen.fill(BLACK)
         text("SIGNAL LOST", 335, 200, RED, BIG)
         text("ENTER - Menu     R - Restart", 340, 330)
-
     pygame.display.flip()
 pygame.quit()
