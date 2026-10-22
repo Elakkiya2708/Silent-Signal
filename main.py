@@ -289,8 +289,9 @@ while running:
                 elif event.key in (pygame.K_d, pygame.K_RIGHT):
                     move_player(1, 0)
                 elif event.key == pygame.K_SPACE:
-                    pulse_radius = 1
-                    pulse_active = True
+    pulse_radius = 1
+    pulse_active = True
+    play_sonar()
 
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             if scene == "menu":
