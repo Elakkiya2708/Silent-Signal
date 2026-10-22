@@ -650,3 +650,4 @@ while running:
         text("ENTER - Menu     R - Restart", 340, 330)
     pygame.display.flip()
 pygame.quit()
+
