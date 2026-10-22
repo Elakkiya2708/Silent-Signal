@@ -581,7 +581,6 @@ while running:
 
                 elif ev.key == pygame.K_RETURN and game.choice:
                     game.state = "menu"
-
             elif game.state == "gameover":
                 if ev.key == pygame.K_RETURN:
                     game.state = "menu"
