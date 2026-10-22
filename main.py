@@ -5,13 +5,17 @@ import math
 import json
 import os
 import sys
+import io
+import wave
+import struct
 from collections import deque
 
-pygame.init()
+# =====================================================
+# SILENT SIGNAL - HORROR SURVIVAL WITH SOUND
+# =====================================================
 
-# ==================================================
-# SILENT SIGNAL: COMPLETE HORROR SURVIVAL
-# ==================================================
+pygame.mixer.pre_init(22050, -16, 1, 512)
+pygame.init()
 
 WIDTH, HEIGHT = 900, 700
 HUD = 100
@@ -39,10 +43,166 @@ font = pygame.font.SysFont("consolas", 18)
 small = pygame.font.SysFont("consolas", 14)
 big = pygame.font.SysFont("consolas", 43, bold=True)
 
+# =====================================================
+# PROCEDURAL AUDIO - NO EXTERNAL FILES REQUIRED
+# =====================================================
+
+SOUND_AVAILABLE = pygame.mixer.get_init() is not None
+sound_on = True
+sounds = {}
+ambient_channel = None
+
+
+def make_sound(freq=440, duration=0.2, volume=0.3,
+               wave_type="sine", slide=0, noise=0.0):
+    """Generate a short sound effect in memory."""
+    if not SOUND_AVAILABLE:
+        return None
+
+    rate = 22050
+    count = max(1, int(rate * duration))
+    buffer = io.BytesIO()
+
+    try:
+        with wave.open(buffer, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(rate)
+
+            samples = bytearray()
+
+            for i in range(count):
+                t = i / rate
+                progress = i / count
+                current_freq = max(20, freq + slide * progress)
+
+                if wave_type == "square":
+                    sample = 1.0 if math.sin(
+                        2 * math.pi * current_freq * t
+                    ) >= 0 else -1.0
+                elif wave_type == "saw":
+                    sample = 2 * (
+                        (current_freq * t) % 1.0
+                    ) - 1.0
+                else:
+                    sample = math.sin(
+                        2 * math.pi * current_freq * t
+                    )
+
+                if noise:
+                    sample = sample * (1 - noise) + (
+                        random.uniform(-1, 1) * noise
+                    )
+
+                # Fade at both ends to avoid audio clicks.
+                fade_in = min(1.0, i / max(1, rate * 0.015))
+                fade_out = min(
+                    1.0, (count - i) / max(1, rate * 0.04)
+                )
+
+                sample *= volume * fade_in * fade_out
+                sample = max(-1, min(1, sample))
+                samples.extend(struct.pack("<h", int(sample * 32767)))
+
+            wav.writeframes(samples)
+
+        buffer.seek(0)
+        return pygame.mixer.Sound(file=buffer)
+
+    except (pygame.error, OSError, ValueError):
+        return None
+
+
+def init_sounds():
+    global sounds
+
+    sounds = {
+        "sonar": make_sound(180, 0.45, 0.45, "sine", 900),
+        "pulse": make_sound(700, 0.20, 0.35, "square", -400),
+        "boss_hit": make_sound(100, 0.35, 0.45, "saw", -65, 0.15),
+        "boss_attack": make_sound(130, 0.25, 0.4, "square", -60),
+        "key": make_sound(880, 0.18, 0.28, "sine", 350),
+        "data": make_sound(600, 0.28, 0.28, "sine", 700),
+        "health": make_sound(520, 0.30, 0.30, "sine", 480),
+        "speed": make_sound(300, 0.30, 0.30, "saw", 850),
+        "flashlight": make_sound(420, 0.25, 0.28, "sine", 250),
+        "save": make_sound(600, 0.14, 0.25, "sine", 200),
+        "win": make_sound(440, 0.65, 0.30, "sine", 600),
+        "lose": make_sound(240, 0.75, 0.38, "saw", -180),
+        "jumpscare": make_sound(85, 0.70, 0.60, "saw", 900, 0.55),
+        "footstep": make_sound(75, 0.055, 0.10, "sine", -20),
+        "pickup": make_sound(500, 0.12, 0.22, "sine", 250),
+    }
+
+
+def play_sound(name):
+    if not sound_on or not SOUND_AVAILABLE:
+        return
+
+    sound = sounds.get(name)
+    if sound:
+        try:
+            sound.play()
+        except pygame.error:
+            pass
+
+
+def start_ambience():
+    """Loop a quiet, low-frequency horror drone."""
+    global ambient_channel
+
+    if not SOUND_AVAILABLE or not sound_on:
+        return
+
+    if ambient_channel is not None:
+        try:
+            ambient_channel.stop()
+        except pygame.error:
+            pass
+
+    ambient = make_sound(
+        48, 3.0, 0.12, "sine", 7, noise=0.12
+    )
+
+    if ambient:
+        try:
+            ambient_channel = pygame.mixer.Channel(0)
+            ambient_channel.play(ambient, loops=-1)
+            ambient_channel.set_volume(0.55)
+            # Keep a reference so the generated Sound stays alive.
+            sounds["ambient"] = ambient
+        except pygame.error:
+            ambient_channel = None
+
+
+def toggle_sound():
+    global sound_on
+
+    sound_on = not sound_on
+
+    if not SOUND_AVAILABLE:
+        show_message("AUDIO DEVICE UNAVAILABLE")
+        return
+
+    if sound_on:
+        start_ambience()
+        show_message("SOUND ON")
+    else:
+        pygame.mixer.stop()
+        show_message("SOUND MUTED")
+
+
+if SOUND_AVAILABLE:
+    init_sounds()
+    start_ambience()
+
+
+# =====================================================
+# GAME STATE
+# =====================================================
+
 state = "menu"
 level = 1
-chapter = 1
-story_seen = False
 
 ROWS, COLS = 17, 23
 maze = []
@@ -86,13 +246,14 @@ jumpscare_timer = 0
 jumpscare_cooldown = 600
 flash_timer = 0
 
-mission_stage = 0
-mission_complete = False
+footstep_timer = 0
 story_text = []
 story_index = 0
 
 
-# ================= UTILITIES =================
+# =====================================================
+# UTILITIES
+# =====================================================
 
 def show_message(text, duration=120):
     global message, message_timer
@@ -155,7 +316,9 @@ def farthest_cell(start=(1, 1)):
     return farthest
 
 
-# ================= MAZE GENERATION =================
+# =====================================================
+# MAZE
+# =====================================================
 
 def generate_maze():
     global ROWS, COLS, maze
@@ -168,7 +331,6 @@ def generate_maze():
     if COLS % 2 == 0:
         COLS += 1
 
-    # Keep the complete maze within the game window.
     while COLS * TILE > WIDTH:
         COLS -= 2
 
@@ -201,6 +363,7 @@ def generate_maze():
 
 def move_player(dx, dy):
     player.x += round(dx)
+
     corners = [
         (player.left, player.top),
         (player.right - 1, player.top),
@@ -212,6 +375,7 @@ def move_player(dx, dy):
         player.x -= round(dx)
 
     player.y += round(dy)
+
     corners = [
         (player.left, player.top),
         (player.right - 1, player.top),
@@ -223,50 +387,52 @@ def move_player(dx, dy):
         player.y -= round(dy)
 
 
-# ================= STORY & MISSIONS =================
+# =====================================================
+# STORY AND MISSIONS
+# =====================================================
 
 def get_story():
     if level == 1:
         return [
             "CHAPTER 1: THE SIGNAL",
-            "You wake up inside an abandoned research facility.",
-            "A strange signal echoes through the dark corridors.",
-            "Collect the access keys and recover the missing data.",
-            "A security experiment is hunting you. Find a way out."
+            "You wake inside an abandoned research facility.",
+            "A strange signal echoes through dark corridors.",
+            "Collect access keys and recover missing research data.",
+            "An experiment is hunting you. Find a way out."
         ]
 
     return [
         f"CHAPTER {level}: DEEPER INTO THE FACILITY",
-        "The signal grows louder as you enter another sector.",
+        "The signal grows louder in this new sector.",
         "The security experiment has become more dangerous.",
-        "Recover the research data and unlock the exit.",
-        "Survive the facility. Discover the truth behind the signal."
+        "Recover the data and unlock the exit.",
+        "Survive the facility. Discover the truth."
     ]
 
 
 def current_mission():
     if keys_collected < total_keys:
-        return "MISSION 1: Collect all access keys"
+        return "MISSION 1: COLLECT ACCESS KEYS"
 
     if data_collected < total_data:
-        return "MISSION 2: Recover research data"
+        return "MISSION 2: RECOVER RESEARCH DATA"
 
     if boss_health > 0:
-        return "MISSION 3: Defeat the security experiment"
+        return "MISSION 3: DEFEAT THE EXPERIMENT"
 
-    return "MISSION 4: Escape through the exit"
+    return "MISSION 4: ESCAPE THROUGH THE EXIT"
 
 
 def start_story():
-    global state, story_text, story_index, story_seen
-
+    global state, story_text, story_index
     story_text = get_story()
     story_index = 0
-    story_seen = True
     state = "story"
 
 
-# ================= LEVEL SETUP =================
+# =====================================================
+# LEVEL SETUP
+# =====================================================
 
 def new_level():
     global player, player_health, player_energy
@@ -274,11 +440,10 @@ def new_level():
     global total_keys, total_data, exit_rect
     global boss_x, boss_y, boss_health, boss_max_health
     global boss_speed, boss_stun, boss_attack_timer
-    global powerups, inventory
-    global speed_timer, flashlight_timer
+    global powerups, inventory, speed_timer, flashlight_timer
     global sonar_cooldown, sonar_active, sonar_radius
-    global pulse_cooldown, mission_stage, mission_complete
-    global jumpscare_timer, jumpscare_cooldown
+    global pulse_cooldown, jumpscare_timer, jumpscare_cooldown
+    global footstep_timer, shake_timer, flash_timer
 
     generate_maze()
 
@@ -295,7 +460,6 @@ def new_level():
     total_data = min(2 + (level - 1) // 3, 4)
     keys_collected = 0
     data_collected = 0
-
     keys = []
     data_files = []
 
@@ -321,7 +485,6 @@ def new_level():
     boss_stun = 0
     boss_attack_timer = 0
 
-    inventory = {"health": 0, "speed": 0, "flashlight": 0}
     powerups = []
 
     for kind in ["health", "speed", "flashlight", "health", "speed"]:
@@ -333,6 +496,7 @@ def new_level():
             "rect": pygame.Rect(x - 9, y - 9, 18, 18)
         })
 
+    inventory = {"health": 0, "speed": 0, "flashlight": 0}
     player_health = 100
     player_energy = 100
     speed_timer = 0
@@ -341,15 +505,18 @@ def new_level():
     sonar_active = False
     sonar_radius = 0
     pulse_cooldown = 0
-    mission_stage = 0
-    mission_complete = False
     jumpscare_timer = 0
     jumpscare_cooldown = 600
+    footstep_timer = 0
+    shake_timer = 0
+    flash_timer = 0
 
     show_message(f"CHAPTER {level}: THE SIGNAL CONTINUES", 180)
 
 
-# ================= INVENTORY =================
+# =====================================================
+# INVENTORY AND POWER-UPS
+# =====================================================
 
 def activate_powerup(slot):
     global player_health, speed_timer, flashlight_timer
@@ -362,6 +529,7 @@ def activate_powerup(slot):
         else:
             player_health = min(100, player_health + 40)
             inventory["health"] -= 1
+            play_sound("health")
             show_message("HEALTH PACK USED: +40 HP!")
 
     elif slot == 2:
@@ -370,6 +538,7 @@ def activate_powerup(slot):
         else:
             speed_timer = 600
             inventory["speed"] -= 1
+            play_sound("speed")
             show_message("SPEED BOOST ACTIVATED!")
 
     elif slot == 3:
@@ -378,6 +547,7 @@ def activate_powerup(slot):
         else:
             flashlight_timer = 900
             inventory["flashlight"] -= 1
+            play_sound("flashlight")
             show_message("FLASHLIGHT ACTIVATED!")
 
 
@@ -387,17 +557,13 @@ def collect_powerups():
             kind = item["kind"]
             inventory[kind] += 1
             powerups.remove(item)
-
-            label = {
-                "health": "HEALTH PACK",
-                "speed": "SPEED BOOST",
-                "flashlight": "FLASHLIGHT"
-            }[kind]
-
-            show_message(f"POWER-UP COLLECTED: {label}!")
+            play_sound(kind)
+            show_message(f"POWER-UP COLLECTED: {kind.upper()}!")
 
 
-# ================= WEAPONS & SONAR =================
+# =====================================================
+# SONAR AND PULSE WEAPON
+# =====================================================
 
 def use_sonar():
     global sonar_cooldown, sonar_active, sonar_radius
@@ -410,6 +576,7 @@ def use_sonar():
     sonar_cooldown = 100
     sonar_active = True
     sonar_radius = 0
+    play_sound("sonar")
 
     px, py = player.center
     distance = math.hypot(px - boss_x, py - boss_y)
@@ -418,10 +585,12 @@ def use_sonar():
         boss_health = max(0, boss_health - 25)
         boss_stun = 75
         shake_timer = 8
+        play_sound("boss_hit")
         show_message("SONAR HIT! BOSS STUNNED!")
 
         if boss_health == 0:
-            show_message("BOSS DEFEATED! COMPLETE THE ESCAPE!", 180)
+            play_sound("win")
+            show_message("BOSS DEFEATED! FIND THE EXIT!", 180)
     else:
         show_message("SONAR PULSE RELEASED!")
 
@@ -440,6 +609,7 @@ def use_pulse_weapon():
 
     player_energy -= 25
     pulse_cooldown = 45
+    play_sound("pulse")
 
     px, py = player.center
     distance = math.hypot(px - boss_x, py - boss_y)
@@ -448,20 +618,23 @@ def use_pulse_weapon():
         boss_health = max(0, boss_health - 15)
         boss_stun = max(boss_stun, 20)
         shake_timer = 5
+        play_sound("boss_hit")
         show_message("PULSE WEAPON HIT THE BOSS!")
 
         if boss_health == 0:
+            play_sound("win")
             show_message("BOSS DEFEATED!", 180)
     else:
         show_message("PULSE FIRED - NO TARGET IN RANGE!")
 
 
-# ================= BOSS AI =================
+# =====================================================
+# BOSS AI
+# =====================================================
 
 def update_boss():
     global boss_x, boss_y, boss_stun
-    global boss_attack_timer, player_health, state
-    global shake_timer
+    global boss_attack_timer, player_health, state, shake_timer
 
     if boss_health <= 0:
         return
@@ -501,14 +674,18 @@ def update_boss():
         player_health -= 15
         boss_attack_timer = 55
         shake_timer = 10
+        play_sound("boss_attack")
         show_message("THE EXPERIMENT ATTACKED YOU!")
 
         if player_health <= 0:
             player_health = 0
+            play_sound("lose")
             state = "lost"
 
 
-# ================= SAVE / LOAD =================
+# =====================================================
+# SAVE AND LOAD
+# =====================================================
 
 def save_game():
     data = {
@@ -523,7 +700,10 @@ def save_game():
     try:
         with open(SAVE_FILE, "w", encoding="utf-8") as file:
             json.dump(data, file, indent=4)
+
+        play_sound("save")
         show_message("PROGRESS SAVED!")
+
     except OSError:
         show_message("COULD NOT SAVE GAME!")
 
@@ -537,11 +717,7 @@ def load_game():
 
         level = max(1, int(data.get("level", 1)))
         new_level()
-
-        show_message(
-            "SAVE LOADED - STARTED THE SAVED CHAPTER!",
-            180
-        )
+        show_message("CHAPTER LOADED. START PLAYING!", 180)
         return True
 
     except (OSError, ValueError, json.JSONDecodeError):
@@ -549,7 +725,9 @@ def load_game():
         return False
 
 
-# ================= GRAPHICS =================
+# =====================================================
+# DRAWING
+# =====================================================
 
 def draw_bar(x, y, width, height, value, maximum, color):
     pygame.draw.rect(screen, (75, 25, 38), (x, y, width, height))
@@ -612,27 +790,21 @@ def draw_hud():
     )
 
     screen.blit(
-        small.render("SPACE Sonar | F Pulse | P Save | L Load | ESC Menu",
-                     True, ORANGE),
+        small.render(
+            "SPACE Sonar | F Pulse | P Save | L Load | M Sound | ESC Menu",
+            True, ORANGE
+        ),
         (190, 63)
     )
 
-    mission = current_mission()
-    screen.blit(small.render(mission, True, WHITE), (190, 82))
+    status = "ON" if sound_on else "OFF"
+    screen.blit(
+        small.render(f"SOUND: {status} | {current_mission()}", True, WHITE),
+        (190, 82)
+    )
 
 
-def draw_game():
-    screen.fill(BLACK)
-    draw_maze()
-
-    for key in keys:
-        pygame.draw.circle(screen, GOLD, key.center, 6)
-        pygame.draw.circle(screen, WHITE, key.center, 2)
-
-    for item in data_files:
-        pygame.draw.rect(screen, BLUE, item, border_radius=3)
-        pygame.draw.rect(screen, WHITE, item, 1, border_radius=3)
-
+def draw_powerups():
     for item in powerups:
         kind = item["kind"]
         color = {
@@ -657,6 +829,21 @@ def draw_game():
             item["rect"].centery - label.get_height() // 2
         ))
 
+
+def draw_game():
+    screen.fill(BLACK)
+    draw_maze()
+
+    for key in keys:
+        pygame.draw.circle(screen, GOLD, key.center, 6)
+        pygame.draw.circle(screen, WHITE, key.center, 2)
+
+    for data in data_files:
+        pygame.draw.rect(screen, BLUE, data, border_radius=3)
+        pygame.draw.rect(screen, WHITE, data, 1, border_radius=3)
+
+    draw_powerups()
+
     exit_color = (
         GREEN if keys_collected == total_keys
         and data_collected == total_data and boss_health <= 0
@@ -670,11 +857,9 @@ def draw_game():
         boss_rect = pygame.Rect(
             int(boss_x - 15), int(boss_y - 15), 30, 30
         )
-        boss_color = ORANGE if boss_stun > 0 else PURPLE
 
-        pygame.draw.rect(
-            screen, boss_color, boss_rect, border_radius=6
-        )
+        color = ORANGE if boss_stun > 0 else PURPLE
+        pygame.draw.rect(screen, color, boss_rect, border_radius=6)
         pygame.draw.rect(screen, RED, boss_rect, 2, border_radius=6)
 
         pygame.draw.circle(
@@ -692,12 +877,11 @@ def draw_game():
             screen, CYAN, player.center, int(sonar_radius), 2
         )
 
-    # Darkness overlay and flashlight visibility
+    # Darkness and flashlight
     darkness = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
     darkness.fill((0, 0, 0, 238))
 
     radius = 225 if flashlight_timer > 0 else 115
-
     pygame.draw.circle(
         darkness, (0, 0, 0, 0), player.center, radius
     )
@@ -710,7 +894,6 @@ def draw_game():
 
     screen.blit(darkness, (0, 0))
 
-    # Scary red flash
     if flash_timer > 0:
         overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         overlay.fill((150, 0, 15, 65))
@@ -725,23 +908,24 @@ def draw_game():
             (WIDTH // 2 - label.get_width() // 2, HEIGHT - 26)
         )
 
-    # Jumpscare face
+    # Jumpscare
     if jumpscare_timer > 0:
         overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         overlay.fill((60, 0, 10, 190))
         screen.blit(overlay, (0, 0))
 
-        face = pygame.Rect(WIDTH // 2 - 115, HEIGHT // 2 - 120, 230, 240)
+        face = pygame.Rect(
+            WIDTH // 2 - 115, HEIGHT // 2 - 120, 230, 240
+        )
+
         pygame.draw.ellipse(screen, (15, 0, 5), face)
         pygame.draw.ellipse(screen, RED, face, 5)
 
         pygame.draw.ellipse(
-            screen, WHITE,
-            (face.x + 35, face.y + 55, 55, 55)
+            screen, WHITE, (face.x + 35, face.y + 55, 55, 55)
         )
         pygame.draw.ellipse(
-            screen, WHITE,
-            (face.x + 140, face.y + 55, 55, 55)
+            screen, WHITE, (face.x + 140, face.y + 55, 55, 55)
         )
 
         pygame.draw.circle(
@@ -752,16 +936,14 @@ def draw_game():
         )
 
         pygame.draw.ellipse(
-            screen, RED,
-            (face.x + 55, face.y + 135, 120, 65)
+            screen, RED, (face.x + 55, face.y + 135, 120, 65)
+        )
+
+        pygame.draw.rect(
+            screen, WHITE, (face.x + 75, face.y + 140, 20, 28)
         )
         pygame.draw.rect(
-            screen, WHITE,
-            (face.x + 75, face.y + 140, 20, 28)
-        )
-        pygame.draw.rect(
-            screen, WHITE,
-            (face.x + 130, face.y + 140, 20, 28)
+            screen, WHITE, (face.x + 130, face.y + 140, 20, 28)
         )
 
 
@@ -787,7 +969,9 @@ def draw_center(title, subtitle, lines):
         )
 
 
-# ================= GAME LOOP =================
+# =====================================================
+# MAIN GAME LOOP
+# =====================================================
 
 running = True
 
@@ -799,6 +983,9 @@ while running:
             running = False
 
         if event.type == pygame.KEYDOWN:
+
+            if event.key == pygame.K_m:
+                toggle_sound()
 
             if state == "menu":
                 if event.key == pygame.K_RETURN:
@@ -853,9 +1040,8 @@ while running:
                 if event.key in (pygame.K_RETURN, pygame.K_SPACE):
                     if state == "won":
                         level += 1
-                        start_story()
                         new_level()
-                        state = "story"
+                        start_story()
 
                     elif state == "lost":
                         new_level()
@@ -869,9 +1055,7 @@ while running:
 
     if state == "playing":
         pressed = pygame.key.get_pressed()
-
-        dx = 0
-        dy = 0
+        dx = dy = 0
 
         if pressed[pygame.K_a] or pressed[pygame.K_LEFT]:
             dx -= 1
@@ -888,7 +1072,18 @@ while running:
             dx *= 0.7071
             dy *= 0.7071
 
+        old_position = player.topleft
         move_player(dx * speed, dy * speed)
+
+        # Footstep sound only when actually moving.
+        if player.topleft != old_position:
+            footstep_timer += 1
+
+            if footstep_timer >= 16:
+                play_sound("footstep")
+                footstep_timer = 0
+        else:
+            footstep_timer = 0
 
         if speed_timer > 0:
             speed_timer -= 1
@@ -902,7 +1097,6 @@ while running:
         if pulse_cooldown > 0:
             pulse_cooldown -= 1
 
-        # Regenerate weapon energy
         player_energy = min(100, player_energy + 0.08)
 
         if sonar_active:
@@ -927,6 +1121,8 @@ while running:
         elif random.random() < 0.001:
             jumpscare_timer = 30
             jumpscare_cooldown = 900
+            flash_timer = 12
+            play_sound("jumpscare")
             show_message("SOMETHING IS WATCHING YOU...", 100)
 
         # Collect keys
@@ -934,13 +1130,15 @@ while running:
             if player.colliderect(key):
                 keys.remove(key)
                 keys_collected += 1
+                play_sound("key")
                 show_message("ACCESS KEY RECOVERED!")
 
-        # Recover research data
+        # Collect research data
         for data in data_files[:]:
             if player.colliderect(data):
                 data_files.remove(data)
                 data_collected += 1
+                play_sound("data")
                 show_message("RESEARCH DATA RECOVERED!")
 
         collect_powerups()
@@ -957,30 +1155,24 @@ while running:
                 show_message("MISSION: DEFEAT THE EXPERIMENT!", 45)
 
             elif level >= 5:
+                play_sound("win")
                 state = "ending"
 
             else:
+                play_sound("win")
                 state = "won"
-
-    # Camera shake effect
-    offset_x = 0
-    offset_y = 0
-
-    if shake_timer > 0:
-        offset_x = random.randint(-4, 4)
-        offset_y = random.randint(-4, 4)
 
     if state == "menu":
         draw_center(
             "SILENT SIGNAL",
-            "COMPLETE HORROR SURVIVAL",
+            "HORROR SURVIVAL - SOUND EDITION",
             [
                 "ENTER: NEW STORY",
                 "L: LOAD SAVED CHAPTER",
                 "WASD / ARROWS: MOVE",
                 "SPACE: SONAR | F: PULSE WEAPON",
                 "1 HEALTH | 2 SPEED | 3 FLASHLIGHT",
-                "P: SAVE GAME | ESC: QUIT TO DESKTOP"
+                "P: SAVE | M: SOUND ON/OFF | ESC: QUIT"
             ]
         )
 
@@ -994,21 +1186,14 @@ while running:
             (WIDTH // 2 - title_img.get_width() // 2, 155)
         )
 
-        if story_index == 0:
-            display_lines = story_text[1:]
-        else:
-            display_lines = story_text[1:]
-
-        for i, line in enumerate(display_lines):
+        for i, line in enumerate(story_text[1:]):
             text_img = font.render(line, True, WHITE)
             screen.blit(
                 text_img,
                 (WIDTH // 2 - text_img.get_width() // 2, 245 + i * 35)
             )
 
-        prompt = small.render(
-            "ENTER / SPACE: CONTINUE", True, GOLD
-        )
+        prompt = small.render("ENTER / SPACE: CONTINUE", True, GOLD)
         screen.blit(
             prompt,
             (WIDTH // 2 - prompt.get_width() // 2, 480)
@@ -1050,11 +1235,13 @@ while running:
             ]
         )
 
-    # Apply subtle shake to the rendered scene area
-    if state == "playing" and (offset_x or offset_y):
-        copy = screen.copy()
+    # Screen shake
+    if state == "playing" and shake_timer > 0:
+        offset_x = random.randint(-4, 4)
+        offset_y = random.randint(-4, 4)
+        frame = screen.copy()
         screen.fill(BLACK)
-        screen.blit(copy, (offset_x, offset_y))
+        screen.blit(frame, (offset_x, offset_y))
 
     pygame.display.flip()
 
