@@ -525,7 +525,6 @@ class Game:
                 self.notice, 140, HEIGHT - 45,
                 WHITE, SMALL
             )
-
 game = Game()
 running = True
 while running:
