@@ -515,7 +515,6 @@ class Game:
             f"TERMINAL {'ON' if self.terminal_on else 'OFF'}",
             510, 40, WHITE, SMALL
         )
-
         if self.notice_time > 0:
             pygame.draw.rect(
                 screen, (5, 8, 12),
