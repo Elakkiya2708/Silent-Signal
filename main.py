@@ -22,11 +22,11 @@ RED = (255, 65, 90)
 YELLOW = (255, 215, 70)
 GREY = (130, 150, 170)
 
-title_font = pygame.font.Font(None, 52)
-font = pygame.font.Font(None, 25)
+title_font = pygame.font.Font(None, 64)
+font = pygame.font.Font(None, 28)
+small_font = pygame.font.Font(None, 22)
 
-# # wall, P player, K key, E exit, M enemy
-maze = [
+LEVEL = [
     "##################",
     "#P...#..........E#",
     "#.##.#.####.###..#",
@@ -38,33 +38,46 @@ maze = [
     "##################",
 ]
 
-ROWS = len(maze)
-COLS = len(maze[0])
-
+ROWS = len(LEVEL)
+COLS = len(LEVEL[0])
 OX = (WIDTH - COLS * TILE) // 2
 OY = (HEIGHT - ROWS * TILE) // 2
 
+scene = "menu"
+sound_on = True
 player_x, player_y = 1, 1
 keys_found = 0
-total_keys = sum(row.count("K") for row in maze)
+total_keys = 2
 won = False
 lost = False
-
 pulse_radius = 0
 pulse_active = False
-pulse_max = 330
-
-enemies = [
-    {"x": 3, "y": 7, "direction": 1},
-    {"x": 16, "y": 7, "direction": -1},
-]
 enemy_timer = 0
+enemies = []
+
+
+def reset_game():
+    global player_x, player_y, keys_found
+    global won, lost, pulse_radius, pulse_active
+    global enemies, enemy_timer
+
+    player_x, player_y = 1, 1
+    keys_found = 0
+    won = lost = False
+    pulse_radius = 0
+    pulse_active = False
+    enemy_timer = 0
+
+    enemies = [
+        {"x": 3, "y": 7, "direction": 1},
+        {"x": 16, "y": 7, "direction": -1},
+    ]
 
 
 def cell_at(x, y):
     if x < 0 or x >= COLS or y < 0 or y >= ROWS:
         return "#"
-    return maze[y][x]
+    return LEVEL[y][x]
 
 
 def move_player(dx, dy):
@@ -82,7 +95,6 @@ def move_player(dx, dy):
     player_x, player_y = nx, ny
 
     if cell == "K":
-        maze[ny] = maze[ny][:nx] + "." + maze[ny][nx + 1:]
         keys_found += 1
 
     if cell == "E":
@@ -93,13 +105,11 @@ def update_enemies():
     global enemy_timer, lost
 
     enemy_timer += 1
-
     if enemy_timer >= 12:
         enemy_timer = 0
 
         for enemy in enemies:
             nx = enemy["x"] + enemy["direction"]
-
             if cell_at(nx, enemy["y"]) == "#":
                 enemy["direction"] *= -1
             else:
@@ -110,14 +120,24 @@ def update_enemies():
             lost = True
 
 
+def draw_text(text, font_obj, color, center):
+    image = font_obj.render(text, True, color)
+    screen.blit(image, image.get_rect(center=center))
+
+
+def draw_button(text, rect, mouse_pos):
+    color = (20, 65, 85) if rect.collidepoint(mouse_pos) else (12, 30, 48)
+    pygame.draw.rect(screen, color, rect, border_radius=10)
+    pygame.draw.rect(screen, CYAN, rect, 2, border_radius=10)
+    draw_text(text, font, WHITE, rect.center)
+
+
 def draw_maze():
-    for y, row in enumerate(maze):
+    for y, row in enumerate(LEVEL):
         for x, cell in enumerate(row):
             rect = pygame.Rect(
-                OX + x * TILE,
-                OY + y * TILE,
-                TILE - 3,
-                TILE - 3,
+                OX + x * TILE, OY + y * TILE,
+                TILE - 3, TILE - 3
             )
 
             distance = math.hypot(
@@ -129,99 +149,124 @@ def draw_maze():
             )
 
             if cell == "#" and visible:
-                pygame.draw.rect(
-                    screen, WALL, rect, border_radius=5
-                )
-                pygame.draw.rect(
-                    screen, (35, 75, 100), rect, 1,
-                    border_radius=5
-                )
+                pygame.draw.rect(screen, WALL, rect, border_radius=5)
+                pygame.draw.rect(screen, (35, 75, 100), rect, 1)
 
-            elif cell == "K" and visible:
-                cx, cy = rect.center
-                pygame.draw.circle(
-                    screen, YELLOW, (cx, cy), 9
-                )
-                pygame.draw.circle(
-                    screen, WHITE, (cx, cy), 4
-                )
+            elif cell == "K" and visible and keys_found < total_keys:
+                pygame.draw.circle(screen, YELLOW, rect.center, 9)
+                pygame.draw.circle(screen, WHITE, rect.center, 3)
 
             elif cell == "E":
-                pygame.draw.rect(
-                    screen,
-                    GREEN if keys_found == total_keys else GREY,
-                    rect, 3, border_radius=5
-                )
+                exit_color = GREEN if keys_found == total_keys else GREY
+                pygame.draw.rect(screen, exit_color, rect, 3, border_radius=5)
 
-            # Enemies are only visible within sonar range
-            for enemy in enemies:
-                ex, ey = enemy["x"], enemy["y"]
-                enemy_distance = math.hypot(
-                    ex - player_x, ey - player_y
-                ) * TILE
+    for enemy in enemies:
+        distance = math.hypot(
+            enemy["x"] - player_x,
+            enemy["y"] - player_y
+        ) * TILE
 
-                if (ex == x and ey == y and
-                        (enemy_distance < 60 or
-                         (pulse_active and
-                          enemy_distance < pulse_radius))):
-                    pygame.draw.circle(
-                        screen, RED, rect.center, 14
-                    )
+        if distance < 60 or (pulse_active and distance < pulse_radius):
+            center = (
+                OX + enemy["x"] * TILE + TILE // 2,
+                OY + enemy["y"] * TILE + TILE // 2
+            )
+            pygame.draw.circle(screen, RED, center, 14)
 
-    px = OX + player_x * TILE + TILE // 2
-    py = OY + player_y * TILE + TILE // 2
-    pygame.draw.circle(screen, CYAN, (px, py), 14)
-    pygame.draw.circle(screen, WHITE, (px, py), 5)
+    center = (
+        OX + player_x * TILE + TILE // 2,
+        OY + player_y * TILE + TILE // 2
+    )
+    pygame.draw.circle(screen, CYAN, center, 14)
+    pygame.draw.circle(screen, WHITE, center, 5)
 
 
-def draw_pulse():
+def draw_game():
+    screen.fill(BG)
+
+    draw_text("SILENT SIGNAL", title_font, CYAN, (WIDTH // 2, 40))
+    draw_text(
+        f"KEYS: {keys_found}/{total_keys}",
+        font, YELLOW, (100, 95)
+    )
+
+    draw_maze()
+
     if pulse_active:
-        px = OX + player_x * TILE + TILE // 2
-        py = OY + player_y * TILE + TILE // 2
+        center = (
+            OX + player_x * TILE + TILE // 2,
+            OY + player_y * TILE + TILE // 2
+        )
         pygame.draw.circle(
-            screen, CYAN, (px, py), int(pulse_radius), 2
+            screen, CYAN, center, int(pulse_radius), 2
+        )
+
+    draw_text(
+        "MOVE: WASD / ARROWS    SPACE: SONAR    ESC: MENU",
+        small_font, WHITE, (WIDTH // 2, HEIGHT - 18)
+    )
+
+    if won or lost:
+        shade = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        shade.fill((0, 0, 0, 185))
+        screen.blit(shade, (0, 0))
+
+        draw_text(
+            "YOU ESCAPED!" if won else "GAME OVER",
+            title_font, GREEN if won else RED,
+            (WIDTH // 2, HEIGHT // 2 - 65)
+        )
+
+        draw_button(
+            "PLAY AGAIN",
+            pygame.Rect(WIDTH // 2 - 110, HEIGHT // 2, 220, 52),
+            pygame.mouse.get_pos()
         )
 
 
-def draw_ui():
-    title = title_font.render("SILENT SIGNAL", True, CYAN)
-    screen.blit(title, (25, 15))
+def draw_menu():
+    screen.fill(BG)
 
-    controls = font.render(
-        "MOVE: WASD/ARROWS   SONAR: SPACE   QUIT: ESC",
-        True, WHITE
-    )
-    screen.blit(controls, (25, 58))
+    # Decorative sonar rings
+    for radius in (80, 125, 170):
+        pygame.draw.circle(
+            screen, (10, 45, 65),
+            (WIDTH // 2, 205), radius, 2
+        )
 
-    key_text = font.render(
-        f"KEYS: {keys_found}/{total_keys}", True, YELLOW
-    )
-    screen.blit(key_text, (25, 92))
-
-    if won:
-        message = "ESCAPED! YOU WIN!"
-        color = GREEN
-    elif lost:
-        message = "CAUGHT! Close and restart the game."
-        color = RED
-    elif keys_found < total_keys:
-        message = "Find every key, avoid enemies, then reach EXIT."
-        color = GREY
-    else:
-        message = "All keys collected! Find the EXIT."
-        color = GREEN
-
-    status = font.render(message, True, color)
-    screen.blit(
-        status,
-        status.get_rect(center=(WIDTH // 2, HEIGHT - 25))
+    draw_text("SILENT SIGNAL", title_font, CYAN, (WIDTH // 2, 190))
+    draw_text(
+        "THE WORLD IS INVISIBLE. SOUND IS YOUR VISION.",
+        small_font, WHITE, (WIDTH // 2, 255)
     )
 
+    mouse = pygame.mouse.get_pos()
 
+    start_rect = pygame.Rect(WIDTH // 2 - 120, 330, 240, 55)
+    sound_rect = pygame.Rect(WIDTH // 2 - 120, 400, 240, 48)
+    quit_rect = pygame.Rect(WIDTH // 2 - 120, 462, 240, 48)
+
+    draw_button("START GAME", start_rect, mouse)
+    draw_button(
+        "SOUND: ON" if sound_on else "SOUND: OFF",
+        sound_rect, mouse
+    )
+    draw_button("QUIT", quit_rect, mouse)
+
+    draw_text(
+        "Collect all keys. Avoid enemies. Find the exit.",
+        small_font, GREY, (WIDTH // 2, 555)
+    )
+
+    return start_rect, sound_rect, quit_rect
+
+
+reset_game()
 running = True
 
 while running:
     clock.tick(FPS)
+    mouse = pygame.mouse.get_pos()
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -229,9 +274,12 @@ while running:
 
         elif event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
-                running = False
+                if scene == "game":
+                    scene = "menu"
+                else:
+                    running = False
 
-            elif not won and not lost:
+            elif scene == "game" and not won and not lost:
                 if event.key in (pygame.K_w, pygame.K_UP):
                     move_player(0, -1)
                 elif event.key in (pygame.K_s, pygame.K_DOWN):
@@ -244,32 +292,38 @@ while running:
                     pulse_radius = 1
                     pulse_active = True
 
-    if not won and not lost:
-        update_enemies()
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if scene == "menu":
+                start_rect, sound_rect, quit_rect = draw_menu()
 
-    if pulse_active:
-        pulse_radius += 7
-        if pulse_radius >= pulse_max:
-            pulse_radius = 0
-            pulse_active = False
+                if start_rect.collidepoint(event.pos):
+                    reset_game()
+                    scene = "game"
+                elif sound_rect.collidepoint(event.pos):
+                    sound_on = not sound_on
+                elif quit_rect.collidepoint(event.pos):
+                    running = False
 
-    screen.fill(BG)
-    draw_maze()
-    draw_pulse()
-    draw_ui()
+            elif scene == "game" and (won or lost):
+                replay_rect = pygame.Rect(
+                    WIDTH // 2 - 110, HEIGHT // 2, 220, 52
+                )
+                if replay_rect.collidepoint(event.pos):
+                    reset_game()
 
-    if won or lost:
-        overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 160))
-        screen.blit(overlay, (0, 0))
+    if scene == "game":
+        if not won and not lost:
+            update_enemies()
 
-        result = "YOU ESCAPED!" if won else "GAME OVER"
-        color = GREEN if won else RED
-        result_text = title_font.render(result, True, color)
-        screen.blit(
-            result_text,
-            result_text.get_rect(center=(WIDTH // 2, HEIGHT // 2))
-        )
+        if pulse_active:
+            pulse_radius += 7
+            if pulse_radius >= 330:
+                pulse_radius = 0
+                pulse_active = False
+
+        draw_game()
+    else:
+        draw_menu()
 
     pygame.display.flip()
 
