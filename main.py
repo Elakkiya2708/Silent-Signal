@@ -324,7 +324,8 @@ while running:
             if pulse_radius >= 330:
                 pulse_radius = 0
                 pulse_active = False
-
+                
+        update_audio()
         draw_game()
     else:
         draw_menu()
