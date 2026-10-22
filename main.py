@@ -529,7 +529,6 @@ class Game:
 
 game = Game()
 running = True
-
 while running:
     dt = min(clock.tick(FPS) / 1000, 0.04)
 
