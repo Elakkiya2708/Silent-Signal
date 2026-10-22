@@ -329,3 +329,23 @@ while running:
 
 pygame.quit()
 sys.exit()
+
+# Audio setup
+AUDIO_AVAILABLE = True
+
+try:
+    pygame.mixer.init()
+except pygame.error:
+    AUDIO_AVAILABLE = False
+
+sound_on = True
+
+def play_sound(frequency=700, duration=120):
+    """Generate a simple sonar beep without external audio files."""
+    if not AUDIO_AVAILABLE or not sound_on:
+        return
+
+    # Placeholder for generated audio.
+    # Pygame mixer can play loaded sounds; this function is safe
+    # when no audio assets are present.
+    pass
