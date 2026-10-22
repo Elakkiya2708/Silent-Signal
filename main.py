@@ -603,7 +603,6 @@ while running:
             int(keys[pygame.K_s] or keys[pygame.K_DOWN])
             - int(keys[pygame.K_w] or keys[pygame.K_UP])
         )
-
         if dx and dy:
             dx *= 0.7071
             dy *= 0.7071
