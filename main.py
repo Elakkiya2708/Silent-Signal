@@ -1,1249 +1,986 @@
 
 import pygame
 import random
-import math
 import json
+import math
 import os
-import sys
 import io
-import wave
 import struct
-from collections import deque
+import wave
 
-# =====================================================
-# SILENT SIGNAL - HORROR SURVIVAL WITH SOUND
-# =====================================================
-
-pygame.mixer.pre_init(22050, -16, 1, 512)
 pygame.init()
 
-WIDTH, HEIGHT = 900, 700
-HUD = 100
-TILE = 32
+# ===================== CONFIGURATION =====================
+
+WIDTH, HEIGHT = 1000, 700
+HUD_HEIGHT = 80
 FPS = 60
+TILE = 40
 SAVE_FILE = "silent_signal_save.json"
 
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("SILENT SIGNAL | Horror Survival")
+pygame.display.set_caption("SILENT SIGNAL | Survival Horror")
 clock = pygame.time.Clock()
 
-WHITE = (240, 245, 255)
-BLACK = (5, 7, 13)
-WALL = (38, 45, 60)
-FLOOR = (17, 21, 30)
-CYAN = (40, 225, 245)
-RED = (240, 45, 70)
-GREEN = (65, 235, 130)
-GOLD = (255, 215, 65)
-PURPLE = (175, 70, 235)
-ORANGE = (255, 145, 35)
-BLUE = (75, 150, 255)
+FONT = pygame.font.SysFont("consolas", 18)
+SMALL = pygame.font.SysFont("consolas", 14)
+TITLE = pygame.font.SysFont("consolas", 48, bold=True)
+BIG = pygame.font.SysFont("consolas", 30, bold=True)
 
-font = pygame.font.SysFont("consolas", 18)
-small = pygame.font.SysFont("consolas", 14)
-big = pygame.font.SysFont("consolas", 43, bold=True)
+BLACK = (5, 7, 12)
+WHITE = (230, 235, 240)
+RED = (210, 45, 55)
+GREEN = (65, 220, 125)
+BLUE = (65, 170, 255)
+YELLOW = (240, 200, 65)
+PURPLE = (170, 90, 220)
+GRAY = (85, 95, 110)
+FLOOR = (24, 29, 37)
+WALL = (55, 64, 78)
 
-# =====================================================
-# PROCEDURAL AUDIO - NO EXTERNAL FILES REQUIRED
-# =====================================================
+# ===================== SOUND GENERATION =====================
 
-SOUND_AVAILABLE = pygame.mixer.get_init() is not None
-sound_on = True
 sounds = {}
-ambient_channel = None
+muted = False
 
 
-def make_sound(freq=440, duration=0.2, volume=0.3,
-               wave_type="sine", slide=0, noise=0.0):
-    """Generate a short sound effect in memory."""
-    if not SOUND_AVAILABLE:
-        return None
-
-    rate = 22050
-    count = max(1, int(rate * duration))
-    buffer = io.BytesIO()
-
+def make_tone(frequency=440, duration=0.12, volume=0.2):
     try:
+        sample_rate = 22050
+        frames = int(sample_rate * duration)
+        raw = bytearray()
+
+        for i in range(frames):
+            fade = min(1, i / 500, (frames - i) / 500)
+            value = int(
+                32767 * volume * fade *
+                math.sin(2 * math.pi * frequency * i / sample_rate)
+            )
+            raw.extend(struct.pack("<h", value))
+
+        buffer = io.BytesIO()
         with wave.open(buffer, "wb") as wav:
             wav.setnchannels(1)
             wav.setsampwidth(2)
-            wav.setframerate(rate)
-
-            samples = bytearray()
-
-            for i in range(count):
-                t = i / rate
-                progress = i / count
-                current_freq = max(20, freq + slide * progress)
-
-                if wave_type == "square":
-                    sample = 1.0 if math.sin(
-                        2 * math.pi * current_freq * t
-                    ) >= 0 else -1.0
-                elif wave_type == "saw":
-                    sample = 2 * (
-                        (current_freq * t) % 1.0
-                    ) - 1.0
-                else:
-                    sample = math.sin(
-                        2 * math.pi * current_freq * t
-                    )
-
-                if noise:
-                    sample = sample * (1 - noise) + (
-                        random.uniform(-1, 1) * noise
-                    )
-
-                # Fade at both ends to avoid audio clicks.
-                fade_in = min(1.0, i / max(1, rate * 0.015))
-                fade_out = min(
-                    1.0, (count - i) / max(1, rate * 0.04)
-                )
-
-                sample *= volume * fade_in * fade_out
-                sample = max(-1, min(1, sample))
-                samples.extend(struct.pack("<h", int(sample * 32767)))
-
-            wav.writeframes(samples)
+            wav.setframerate(sample_rate)
+            wav.writeframes(raw)
 
         buffer.seek(0)
-        return pygame.mixer.Sound(file=buffer)
-
+        return pygame.mixer.Sound(buffer)
     except (pygame.error, OSError, ValueError):
         return None
 
 
-def init_sounds():
-    global sounds
+try:
+    if pygame.mixer.get_init() is None:
+        pygame.mixer.init()
+except pygame.error:
+    pass
 
-    sounds = {
-        "sonar": make_sound(180, 0.45, 0.45, "sine", 900),
-        "pulse": make_sound(700, 0.20, 0.35, "square", -400),
-        "boss_hit": make_sound(100, 0.35, 0.45, "saw", -65, 0.15),
-        "boss_attack": make_sound(130, 0.25, 0.4, "square", -60),
-        "key": make_sound(880, 0.18, 0.28, "sine", 350),
-        "data": make_sound(600, 0.28, 0.28, "sine", 700),
-        "health": make_sound(520, 0.30, 0.30, "sine", 480),
-        "speed": make_sound(300, 0.30, 0.30, "saw", 850),
-        "flashlight": make_sound(420, 0.25, 0.28, "sine", 250),
-        "save": make_sound(600, 0.14, 0.25, "sine", 200),
-        "win": make_sound(440, 0.65, 0.30, "sine", 600),
-        "lose": make_sound(240, 0.75, 0.38, "saw", -180),
-        "jumpscare": make_sound(85, 0.70, 0.60, "saw", 900, 0.55),
-        "footstep": make_sound(75, 0.055, 0.10, "sine", -20),
-        "pickup": make_sound(500, 0.12, 0.22, "sine", 250),
-    }
+sounds["sonar"] = make_tone(700, 0.18, 0.18)
+sounds["shot"] = make_tone(100, 0.16, 0.28)
+sounds["pickup"] = make_tone(850, 0.12, 0.16)
+sounds["hurt"] = make_tone(65, 0.25, 0.3)
+sounds["alert"] = make_tone(350, 0.22, 0.16)
+sounds["boss"] = make_tone(45, 0.4, 0.35)
+sounds["win"] = make_tone(950, 0.5, 0.18)
 
 
 def play_sound(name):
-    if not sound_on or not SOUND_AVAILABLE:
-        return
-
     sound = sounds.get(name)
-    if sound:
+    if sound and not muted:
         try:
             sound.play()
         except pygame.error:
             pass
 
 
-def start_ambience():
-    """Loop a quiet, low-frequency horror drone."""
-    global ambient_channel
+# ===================== GAME STATE =====================
 
-    if not SOUND_AVAILABLE or not sound_on:
-        return
-
-    if ambient_channel is not None:
-        try:
-            ambient_channel.stop()
-        except pygame.error:
-            pass
-
-    ambient = make_sound(
-        48, 3.0, 0.12, "sine", 7, noise=0.12
-    )
-
-    if ambient:
-        try:
-            ambient_channel = pygame.mixer.Channel(0)
-            ambient_channel.play(ambient, loops=-1)
-            ambient_channel.set_volume(0.55)
-            # Keep a reference so the generated Sound stays alive.
-            sounds["ambient"] = ambient
-        except pygame.error:
-            ambient_channel = None
-
-
-def toggle_sound():
-    global sound_on
-
-    sound_on = not sound_on
-
-    if not SOUND_AVAILABLE:
-        show_message("AUDIO DEVICE UNAVAILABLE")
-        return
-
-    if sound_on:
-        start_ambience()
-        show_message("SOUND ON")
-    else:
-        pygame.mixer.stop()
-        show_message("SOUND MUTED")
-
-
-if SOUND_AVAILABLE:
-    init_sounds()
-    start_ambience()
-
-
-# =====================================================
-# GAME STATE
-# =====================================================
-
-state = "menu"
+game_state = "menu"
 level = 1
-
-ROWS, COLS = 17, 23
-maze = []
-
-player = pygame.Rect(0, 0, 20, 20)
-player_health = 100
-player_speed = 2.5
-player_energy = 100
-
-boss_x = 0.0
-boss_y = 0.0
+health = 100
+energy = 100
+ammo = 12
+score = 0
+collected_data = 0
+inventory = ["Pulse Blaster"]
+powerups = {"health": 1, "speed": 0, "flashlight": 1}
+message = "Find the exit. Stay silent."
+message_timer = 240
+chapter_intro = True
+boss_mode = False
 boss_health = 100
-boss_max_health = 100
-boss_speed = 0.8
-boss_stun = 0
-boss_attack_timer = 0
 
-keys = []
-data_files = []
-total_keys = 3
-keys_collected = 0
-data_collected = 0
-total_data = 2
+# Enemy AI tuning
+ENEMY_VISION = 230
+ENEMY_HEARING = 155
+ENEMY_SPEED = 1.25
+CHASE_SPEED = 2.05
+SEARCH_SECONDS = 4.0
 
-exit_rect = pygame.Rect(0, 0, TILE, TILE)
+player = pygame.Rect(80, HUD_HEIGHT + 80, 24, 24)
+player_speed = 3.0
+last_player_position = player.center
 
-inventory = {"health": 0, "speed": 0, "flashlight": 0}
-powerups = []
+walls = []
+floor_tiles = []
+items = []
+bullets = []
+particles = []
+enemies = []
+exit_rect = pygame.Rect(900, 600, 30, 30)
+boss = None
 
-speed_timer = 0
-flashlight_timer = 0
-sonar_cooldown = 0
-sonar_active = False
-sonar_radius = 0
-pulse_cooldown = 0
-
-message = ""
-message_timer = 0
-shake_timer = 0
-jumpscare_timer = 0
-jumpscare_cooldown = 600
-flash_timer = 0
-
-footstep_timer = 0
-story_text = []
-story_index = 0
+mission_index = 0
+missions = [
+    "MISSION 1: Find the exit",
+    "MISSION 2: Collect 3 data fragments",
+    "MISSION 3: Survive the hunter",
+    "MISSION 4: Defeat the boss",
+    "MISSION 5: Escape the facility",
+]
 
 
-# =====================================================
-# UTILITIES
-# =====================================================
-
-def show_message(text, duration=120):
+def notify(text, frames=180):
     global message, message_timer
     message = text
-    message_timer = duration
+    message_timer = frames
 
 
-def cell_center(cell):
-    x, y = cell
-    return x * TILE + TILE // 2, y * TILE + TILE // 2 + HUD
+def distance(a, b):
+    return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
-def is_wall_pixel(x, y):
-    col = int(x // TILE)
-    row = int((y - HUD) // TILE)
+def line_of_sight(start, end):
+    x1, y1 = start
+    x2, y2 = end
+    length = distance(start, end)
+    steps = max(1, int(length / 5))
 
-    if row < 0 or row >= ROWS or col < 0 or col >= COLS:
+    for i in range(steps + 1):
+        t = i / steps
+        x = int(x1 + (x2 - x1) * t)
+        y = int(y1 + (y2 - y1) * t)
+        if is_wall_point(x, y):
+            return False
+
+    return True
+
+
+# ===================== LEVEL GENERATION =====================
+
+def is_wall_point(x, y):
+    if x < 0 or y < HUD_HEIGHT or x >= WIDTH or y >= HEIGHT:
         return True
 
-    return maze[row][col] == 1
+    return any(w.collidepoint(x, y) for w in walls)
 
 
-def random_floor(excluded, min_distance=0):
-    candidates = []
-
-    for y in range(1, ROWS - 1):
-        for x in range(1, COLS - 1):
-            if maze[y][x] != 0 or (x, y) in excluded:
-                continue
-
-            distance = abs(x - 1) + abs(y - 1)
-            if distance >= min_distance:
-                candidates.append((x, y))
-
-    return random.choice(candidates) if candidates else (1, 1)
+def hits_wall(rect):
+    return any(rect.colliderect(w) for w in walls)
 
 
-def farthest_cell(start=(1, 1)):
-    queue = deque([(start[0], start[1], 0)])
-    visited = {start}
-    farthest = start
-    maximum = 0
+def move_rect(rect, dx, dy):
+    rect.x += int(dx)
+    if hits_wall(rect):
+        rect.x -= int(dx)
 
-    while queue:
-        x, y, dist = queue.popleft()
-
-        if dist > maximum:
-            maximum = dist
-            farthest = (x, y)
-
-        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-            nx, ny = x + dx, y + dy
-
-            if (0 <= nx < COLS and 0 <= ny < ROWS
-                    and maze[ny][nx] == 0
-                    and (nx, ny) not in visited):
-                visited.add((nx, ny))
-                queue.append((nx, ny, dist + 1))
-
-    return farthest
+    rect.y += int(dy)
+    if hits_wall(rect):
+        rect.y -= int(dy)
 
 
-# =====================================================
-# MAZE
-# =====================================================
+def open_position(min_distance=100):
+    for _ in range(500):
+        x = random.randint(2, WIDTH // TILE - 3) * TILE + 8
+        y = random.randint((HUD_HEIGHT // TILE) + 2, HEIGHT // TILE - 2) * TILE + 8
+        rect = pygame.Rect(x, y, 24, 24)
 
-def generate_maze():
-    global ROWS, COLS, maze
+        if not hits_wall(rect) and distance(rect.center, player.center) > min_distance:
+            return rect
 
-    ROWS = min(17 + (level - 1) * 2, 23)
-    COLS = min(23 + (level - 1) * 2, 31)
+    return pygame.Rect(WIDTH - 100, HEIGHT - 100, 24, 24)
 
-    if ROWS % 2 == 0:
-        ROWS += 1
-    if COLS % 2 == 0:
-        COLS += 1
-
-    while COLS * TILE > WIDTH:
-        COLS -= 2
-
-    while ROWS * TILE > HEIGHT - HUD:
-        ROWS -= 2
-
-    maze = [[1] * COLS for _ in range(ROWS)]
-    maze[1][1] = 0
-    stack = [(1, 1)]
-
-    while stack:
-        x, y = stack[-1]
-        choices = []
-
-        for dx, dy in [(2, 0), (-2, 0), (0, 2), (0, -2)]:
-            nx, ny = x + dx, y + dy
-
-            if (1 <= nx < COLS - 1 and
-                    1 <= ny < ROWS - 1 and maze[ny][nx] == 1):
-                choices.append((nx, ny, dx, dy))
-
-        if choices:
-            nx, ny, dx, dy = random.choice(choices)
-            maze[y + dy // 2][x + dx // 2] = 0
-            maze[ny][nx] = 0
-            stack.append((nx, ny))
-        else:
-            stack.pop()
-
-
-def move_player(dx, dy):
-    player.x += round(dx)
-
-    corners = [
-        (player.left, player.top),
-        (player.right - 1, player.top),
-        (player.left, player.bottom - 1),
-        (player.right - 1, player.bottom - 1)
-    ]
-
-    if any(is_wall_pixel(x, y) for x, y in corners):
-        player.x -= round(dx)
-
-    player.y += round(dy)
-
-    corners = [
-        (player.left, player.top),
-        (player.right - 1, player.top),
-        (player.left, player.bottom - 1),
-        (player.right - 1, player.bottom - 1)
-    ]
-
-    if any(is_wall_pixel(x, y) for x, y in corners):
-        player.y -= round(dy)
-
-
-# =====================================================
-# STORY AND MISSIONS
-# =====================================================
-
-def get_story():
-    if level == 1:
-        return [
-            "CHAPTER 1: THE SIGNAL",
-            "You wake inside an abandoned research facility.",
-            "A strange signal echoes through dark corridors.",
-            "Collect access keys and recover missing research data.",
-            "An experiment is hunting you. Find a way out."
-        ]
-
-    return [
-        f"CHAPTER {level}: DEEPER INTO THE FACILITY",
-        "The signal grows louder in this new sector.",
-        "The security experiment has become more dangerous.",
-        "Recover the data and unlock the exit.",
-        "Survive the facility. Discover the truth."
-    ]
-
-
-def current_mission():
-    if keys_collected < total_keys:
-        return "MISSION 1: COLLECT ACCESS KEYS"
-
-    if data_collected < total_data:
-        return "MISSION 2: RECOVER RESEARCH DATA"
-
-    if boss_health > 0:
-        return "MISSION 3: DEFEAT THE EXPERIMENT"
-
-    return "MISSION 4: ESCAPE THROUGH THE EXIT"
-
-
-def start_story():
-    global state, story_text, story_index
-    story_text = get_story()
-    story_index = 0
-    state = "story"
-
-
-# =====================================================
-# LEVEL SETUP
-# =====================================================
 
 def new_level():
-    global player, player_health, player_energy
-    global keys, data_files, keys_collected, data_collected
-    global total_keys, total_data, exit_rect
-    global boss_x, boss_y, boss_health, boss_max_health
-    global boss_speed, boss_stun, boss_attack_timer
-    global powerups, inventory, speed_timer, flashlight_timer
-    global sonar_cooldown, sonar_active, sonar_radius
-    global pulse_cooldown, jumpscare_timer, jumpscare_cooldown
-    global footstep_timer, shake_timer, flash_timer
+    global walls, floor_tiles, items, enemies, bullets, particles
+    global player, exit_rect, boss, boss_mode, boss_health, ammo, energy
 
-    generate_maze()
+    walls = []
+    floor_tiles = []
+    items = []
+    enemies = []
+    bullets = []
+    particles = []
+    boss = None
+    boss_mode = level >= 4
+    boss_health = 100
+    ammo = max(ammo, 8)
+    energy = 100
 
-    sx, sy = cell_center((1, 1))
-    player = pygame.Rect(sx - 10, sy - 10, 20, 20)
+    # Outer boundary
+    for x in range(0, WIDTH, TILE):
+        walls.append(pygame.Rect(x, HUD_HEIGHT, TILE, TILE))
+        walls.append(pygame.Rect(x, HEIGHT - TILE, TILE, TILE))
 
-    end_cell = farthest_cell()
-    ex, ey = cell_center(end_cell)
-    exit_rect = pygame.Rect(ex - 13, ey - 13, 26, 26)
+    for y in range(HUD_HEIGHT, HEIGHT, TILE):
+        walls.append(pygame.Rect(0, y, TILE, TILE))
+        walls.append(pygame.Rect(WIDTH - TILE, y, TILE, TILE))
 
-    excluded = {(1, 1), end_cell}
+    # Random maze walls
+    for _ in range(95 + level * 7):
+        x = random.randrange(1, WIDTH // TILE - 1) * TILE
+        y = random.randrange(3, HEIGHT // TILE - 1) * TILE
+        candidate = pygame.Rect(x, y, TILE, TILE)
 
-    total_keys = min(3 + (level - 1) // 2, 6)
-    total_data = min(2 + (level - 1) // 3, 4)
-    keys_collected = 0
-    data_collected = 0
-    keys = []
-    data_files = []
+        if candidate.colliderect(pygame.Rect(40, HUD_HEIGHT + 40, 160, 160)):
+            continue
 
-    for _ in range(total_keys):
-        cell = random_floor(excluded, 4)
-        excluded.add(cell)
-        x, y = cell_center(cell)
-        keys.append(pygame.Rect(x - 6, y - 6, 12, 12))
+        walls.append(candidate)
 
-    for _ in range(total_data):
-        cell = random_floor(excluded, 5)
-        excluded.add(cell)
-        x, y = cell_center(cell)
-        data_files.append(pygame.Rect(x - 7, y - 7, 14, 14))
+    player.update(70, HUD_HEIGHT + 70, 24, 24)
 
-    boss_cell = random_floor(excluded, 7)
-    excluded.add(boss_cell)
-    boss_x, boss_y = map(float, cell_center(boss_cell))
+    # Clear a small starting area
+    walls = [
+        w for w in walls
+        if not w.colliderect(pygame.Rect(40, HUD_HEIGHT + 40, 120, 120))
+    ]
 
-    boss_max_health = 100 + (level - 1) * 25
-    boss_health = boss_max_health
-    boss_speed = min(0.75 + level * 0.09, 1.7)
-    boss_stun = 0
-    boss_attack_timer = 0
+    exit_rect = open_position(300)
+    exit_rect.size = (28, 28)
 
-    powerups = []
+    # Data fragments and pickups
+    for _ in range(3):
+        items.append({"rect": open_position(100), "type": "data"})
 
-    for kind in ["health", "speed", "flashlight", "health", "speed"]:
-        cell = random_floor(excluded, 3)
-        excluded.add(cell)
-        x, y = cell_center(cell)
-        powerups.append({
-            "kind": kind,
-            "rect": pygame.Rect(x - 9, y - 9, 18, 18)
+    for _ in range(2):
+        items.append({"rect": open_position(100), "type": "ammo"})
+
+    items.append({"rect": open_position(100), "type": "health"})
+
+    # Hunters
+    for _ in range(min(2 + level, 6)):
+        rect = open_position(240)
+        enemies.append({
+            "rect": rect,
+            "state": "patrol",
+            "target": rect.center,
+            "last_seen": None,
+            "search_timer": 0.0,
+            "alert_cooldown": 0,
+            "patrol_timer": random.randint(40, 120),
+            "speed": ENEMY_SPEED + level * 0.06,
         })
 
-    inventory = {"health": 0, "speed": 0, "flashlight": 0}
-    player_health = 100
-    player_energy = 100
-    speed_timer = 0
-    flashlight_timer = 0
-    sonar_cooldown = 0
-    sonar_active = False
-    sonar_radius = 0
-    pulse_cooldown = 0
-    jumpscare_timer = 0
-    jumpscare_cooldown = 600
-    footstep_timer = 0
-    shake_timer = 0
-    flash_timer = 0
-
-    show_message(f"CHAPTER {level}: THE SIGNAL CONTINUES", 180)
+    if boss_mode:
+        boss_rect = open_position(350)
+        boss = {
+            "rect": pygame.Rect(boss_rect.x, boss_rect.y, 38, 38),
+            "speed": 1.2 + level * 0.12,
+            "attack_timer": 0,
+        }
+        notify("WARNING: HOSTILE ENTITY DETECTED!", 240)
+    else:
+        notify(f"CHAPTER {level}: THE FACILITY", 180)
 
 
-# =====================================================
-# INVENTORY AND POWER-UPS
-# =====================================================
+# ===================== PARTICLES =====================
 
-def activate_powerup(slot):
-    global player_health, speed_timer, flashlight_timer
-
-    if slot == 1:
-        if inventory["health"] <= 0:
-            show_message("NO HEALTH PACK AVAILABLE!")
-        elif player_health >= 100:
-            show_message("HEALTH IS ALREADY FULL!")
-        else:
-            player_health = min(100, player_health + 40)
-            inventory["health"] -= 1
-            play_sound("health")
-            show_message("HEALTH PACK USED: +40 HP!")
-
-    elif slot == 2:
-        if inventory["speed"] <= 0:
-            show_message("NO SPEED BOOST AVAILABLE!")
-        else:
-            speed_timer = 600
-            inventory["speed"] -= 1
-            play_sound("speed")
-            show_message("SPEED BOOST ACTIVATED!")
-
-    elif slot == 3:
-        if inventory["flashlight"] <= 0:
-            show_message("NO FLASHLIGHT AVAILABLE!")
-        else:
-            flashlight_timer = 900
-            inventory["flashlight"] -= 1
-            play_sound("flashlight")
-            show_message("FLASHLIGHT ACTIVATED!")
+def spawn_particles(pos, color, count=8):
+    for _ in range(count):
+        particles.append({
+            "x": float(pos[0]),
+            "y": float(pos[1]),
+            "vx": random.uniform(-2.5, 2.5),
+            "vy": random.uniform(-2.5, 2.5),
+            "life": random.randint(15, 35),
+            "color": color,
+        })
 
 
-def collect_powerups():
-    for item in powerups[:]:
-        if player.colliderect(item["rect"]):
-            kind = item["kind"]
-            inventory[kind] += 1
-            powerups.remove(item)
-            play_sound(kind)
-            show_message(f"POWER-UP COLLECTED: {kind.upper()}!")
+def update_particles():
+    for p in particles[:]:
+        p["x"] += p["vx"]
+        p["y"] += p["vy"]
+        p["life"] -= 1
+        if p["life"] <= 0:
+            particles.remove(p)
 
 
-# =====================================================
-# SONAR AND PULSE WEAPON
-# =====================================================
+def draw_particles():
+    for p in particles:
+        pygame.draw.circle(
+            screen, p["color"],
+            (int(p["x"]), int(p["y"])),
+            max(1, p["life"] // 10)
+        )
+
+
+# ===================== ADVANCED ENEMY AI =====================
+
+def choose_patrol_target(enemy):
+    for _ in range(100):
+        x = random.randint(TILE, WIDTH - TILE)
+        y = random.randint(HUD_HEIGHT + TILE, HEIGHT - TILE)
+        if not is_wall_point(x, y):
+            enemy["target"] = (x, y)
+            enemy["patrol_timer"] = random.randint(60, 150)
+            return
+
+    enemy["target"] = enemy["rect"].center
+
+
+def enemy_move_toward(enemy, target, speed):
+    rect = enemy["rect"]
+    dx = target[0] - rect.centerx
+    dy = target[1] - rect.centery
+    length = math.hypot(dx, dy)
+
+    if length < 2:
+        return
+
+    vx = dx / length * speed
+    vy = dy / length * speed
+
+    old_x, old_y = rect.x, rect.y
+
+    rect.x += round(vx)
+    if hits_wall(rect):
+        rect.x = old_x
+
+    rect.y += round(vy)
+    if hits_wall(rect):
+        rect.y = old_y
+
+    if rect.x == old_x and rect.y == old_y:
+        choose_patrol_target(enemy)
+
+
+def update_enemies(dt):
+    global health
+
+    for enemy in enemies:
+        rect = enemy["rect"]
+        player_distance = distance(rect.center, player.center)
+        visible = (
+            player_distance <= ENEMY_VISION
+            and line_of_sight(rect.center, player.center)
+        )
+
+        # Sprinting, firing or nearby movement can attract enemies.
+        heard = player_distance <= ENEMY_HEARING and (
+            moving or firing_this_frame or sprinting
+        )
+
+        if visible:
+            enemy["state"] = "chase"
+            enemy["last_seen"] = player.center
+            enemy["search_timer"] = SEARCH_SECONDS
+
+            if enemy["alert_cooldown"] <= 0:
+                play_sound("alert")
+                enemy["alert_cooldown"] = 100
+
+        elif heard:
+            enemy["state"] = "investigate"
+            enemy["target"] = player.center
+            enemy["search_timer"] = SEARCH_SECONDS
+
+        elif enemy["state"] == "chase":
+            enemy["state"] = "search"
+            enemy["search_timer"] = SEARCH_SECONDS
+
+        enemy["alert_cooldown"] = max(0, enemy["alert_cooldown"] - 1)
+
+        if enemy["state"] == "patrol":
+            enemy["patrol_timer"] -= 1
+            if distance(rect.center, enemy["target"]) < 20 or enemy["patrol_timer"] <= 0:
+                choose_patrol_target(enemy)
+
+            enemy_move_toward(enemy, enemy["target"], enemy["speed"])
+
+        elif enemy["state"] == "investigate":
+            enemy_move_toward(enemy, enemy["target"], enemy["speed"] * 1.15)
+
+            if distance(rect.center, enemy["target"]) < 24:
+                enemy["state"] = "search"
+                enemy["search_timer"] = SEARCH_SECONDS
+
+        elif enemy["state"] == "chase":
+            enemy_move_toward(enemy, player.center, CHASE_SPEED + level * 0.05)
+
+        elif enemy["state"] == "search":
+            enemy["search_timer"] -= dt
+
+            if enemy["last_seen"]:
+                enemy_move_toward(enemy, enemy["last_seen"], enemy["speed"])
+
+            if enemy["search_timer"] <= 0:
+                enemy["state"] = "patrol"
+                choose_patrol_target(enemy)
+
+        if rect.colliderect(player):
+            global damage_cooldown
+            if damage_cooldown <= 0:
+                health -= 10
+                damage_cooldown = 50
+                play_sound("hurt")
+                spawn_particles(player.center, RED, 12)
+                notify("THE HUNTER CAUGHT YOU!", 90)
+
+
+# ===================== WEAPONS =====================
+
+def fire_weapon():
+    global ammo, energy
+
+    if ammo <= 0:
+        notify("OUT OF AMMO!", 60)
+        return
+
+    if energy < 8:
+        notify("NOT ENOUGH ENERGY!", 60)
+        return
+
+    ammo -= 1
+    energy -= 8
+    play_sound("shot")
+
+    mx, my = pygame.mouse.get_pos()
+    dx, dy = mx - player.centerx, my - player.centery
+    length = max(1, math.hypot(dx, dy))
+
+    bullets.append({
+        "x": float(player.centerx),
+        "y": float(player.centery),
+        "vx": dx / length * 10,
+        "vy": dy / length * 10,
+        "life": 45,
+    })
+
+
+def update_bullets():
+    global score, boss_health
+
+    for bullet in bullets[:]:
+        bullet["x"] += bullet["vx"]
+        bullet["y"] += bullet["vy"]
+        bullet["life"] -= 1
+
+        pos = (int(bullet["x"]), int(bullet["y"]))
+
+        if bullet["life"] <= 0 or is_wall_point(*pos):
+            bullets.remove(bullet)
+            continue
+
+        hit = False
+
+        for enemy in enemies[:]:
+            if enemy["rect"].collidepoint(pos):
+                enemies.remove(enemy)
+                score += 100
+                spawn_particles(pos, PURPLE, 18)
+                hit = True
+                break
+
+        if boss and boss["rect"].collidepoint(pos):
+            boss_health -= 12
+            spawn_particles(pos, RED, 8)
+            hit = True
+
+            if boss_health <= 0:
+                spawn_particles(boss["rect"].center, YELLOW, 40)
+                boss = None
+                score += 500
+                play_sound("win")
+                notify("BOSS DEFEATED! FIND THE EXIT.", 240)
+
+        if hit:
+            bullets.remove(bullet)
+
+
+# ===================== SONAR =====================
+
+sonar_timer = 0
+
 
 def use_sonar():
-    global sonar_cooldown, sonar_active, sonar_radius
-    global boss_health, boss_stun, shake_timer
+    global energy, sonar_timer
 
-    if sonar_cooldown > 0:
-        show_message("SONAR IS RECHARGING!")
+    if energy < 15:
+        notify("SONAR ENERGY LOW!", 60)
         return
 
-    sonar_cooldown = 100
-    sonar_active = True
-    sonar_radius = 0
+    energy -= 15
+    sonar_timer = 75
     play_sound("sonar")
-
-    px, py = player.center
-    distance = math.hypot(px - boss_x, py - boss_y)
-
-    if boss_health > 0 and distance <= 190:
-        boss_health = max(0, boss_health - 25)
-        boss_stun = 75
-        shake_timer = 8
-        play_sound("boss_hit")
-        show_message("SONAR HIT! BOSS STUNNED!")
-
-        if boss_health == 0:
-            play_sound("win")
-            show_message("BOSS DEFEATED! FIND THE EXIT!", 180)
-    else:
-        show_message("SONAR PULSE RELEASED!")
+    notify("SONAR PING: SCANNING NEARBY HOSTILES", 90)
 
 
-def use_pulse_weapon():
-    global player_energy, pulse_cooldown
-    global boss_health, boss_stun, shake_timer
+def draw_sonar():
+    if sonar_timer > 0:
+        radius = int((75 - sonar_timer) * 5 + 20)
+        pygame.draw.circle(screen, BLUE, player.center, radius, 2)
 
-    if pulse_cooldown > 0:
-        show_message("WEAPON RECHARGING!")
-        return
+        for enemy in enemies:
+            if distance(player.center, enemy["rect"].center) < radius + 20:
+                pygame.draw.circle(screen, RED, enemy["rect"].center, 18, 2)
 
-    if player_energy < 25:
-        show_message("NOT ENOUGH ENERGY!")
-        return
-
-    player_energy -= 25
-    pulse_cooldown = 45
-    play_sound("pulse")
-
-    px, py = player.center
-    distance = math.hypot(px - boss_x, py - boss_y)
-
-    if boss_health > 0 and distance <= 150:
-        boss_health = max(0, boss_health - 15)
-        boss_stun = max(boss_stun, 20)
-        shake_timer = 5
-        play_sound("boss_hit")
-        show_message("PULSE WEAPON HIT THE BOSS!")
-
-        if boss_health == 0:
-            play_sound("win")
-            show_message("BOSS DEFEATED!", 180)
-    else:
-        show_message("PULSE FIRED - NO TARGET IN RANGE!")
+        if boss:
+            pygame.draw.circle(screen, PURPLE, boss["rect"].center, 24, 2)
 
 
-# =====================================================
-# BOSS AI
-# =====================================================
-
-def update_boss():
-    global boss_x, boss_y, boss_stun
-    global boss_attack_timer, player_health, state, shake_timer
-
-    if boss_health <= 0:
-        return
-
-    if boss_stun > 0:
-        boss_stun -= 1
-        return
-
-    px, py = player.center
-    dx = px - boss_x
-    dy = py - boss_y
-    distance = math.hypot(dx, dy)
-
-    if distance > 2:
-        vx = dx / distance * boss_speed
-        vy = dy / distance * boss_speed
-
-        nx = boss_x + vx
-        ny = boss_y + vy
-
-        if (not is_wall_pixel(nx - 14, boss_y - 14)
-                and not is_wall_pixel(nx + 14, boss_y + 14)):
-            boss_x = nx
-
-        if (not is_wall_pixel(boss_x - 14, ny - 14)
-                and not is_wall_pixel(boss_x + 14, ny + 14)):
-            boss_y = ny
-
-    if boss_attack_timer > 0:
-        boss_attack_timer -= 1
-
-    boss_rect = pygame.Rect(
-        int(boss_x - 15), int(boss_y - 15), 30, 30
-    )
-
-    if player.colliderect(boss_rect) and boss_attack_timer <= 0:
-        player_health -= 15
-        boss_attack_timer = 55
-        shake_timer = 10
-        play_sound("boss_attack")
-        show_message("THE EXPERIMENT ATTACKED YOU!")
-
-        if player_health <= 0:
-            player_health = 0
-            play_sound("lose")
-            state = "lost"
-
-
-# =====================================================
-# SAVE AND LOAD
-# =====================================================
+# ===================== SAVE / LOAD =====================
 
 def save_game():
     data = {
         "level": level,
-        "player_health": player_health,
-        "player_energy": player_energy,
-        "keys_collected": keys_collected,
-        "data_collected": data_collected,
-        "inventory": inventory
+        "health": health,
+        "energy": energy,
+        "ammo": ammo,
+        "score": score,
+        "collected_data": collected_data,
+        "inventory": inventory,
+        "powerups": powerups,
     }
 
     try:
-        with open(SAVE_FILE, "w", encoding="utf-8") as file:
-            json.dump(data, file, indent=4)
-
-        play_sound("save")
-        show_message("PROGRESS SAVED!")
-
+        with open(SAVE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        notify("GAME SAVED!", 90)
     except OSError:
-        show_message("COULD NOT SAVE GAME!")
+        notify("SAVE FAILED!", 90)
 
 
 def load_game():
-    global level
+    global level, health, energy, ammo, score, collected_data
+    global inventory, powerups, game_state
 
     try:
-        with open(SAVE_FILE, "r", encoding="utf-8") as file:
-            data = json.load(file)
+        with open(SAVE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
 
-        level = max(1, int(data.get("level", 1)))
+        level = max(1, min(5, int(data.get("level", 1))))
+        health = max(1, min(100, int(data.get("health", 100))))
+        energy = max(0, min(100, int(data.get("energy", 100))))
+        ammo = max(0, int(data.get("ammo", 12)))
+        score = max(0, int(data.get("score", 0)))
+        collected_data = max(0, int(data.get("collected_data", 0)))
+        inventory = data.get("inventory", ["Pulse Blaster"])
+        powerups = data.get("powerups", {"health": 1, "speed": 0, "flashlight": 1})
+
         new_level()
-        show_message("CHAPTER LOADED. START PLAYING!", 180)
-        return True
+        game_state = "playing"
+        notify("SAVE LOADED!", 90)
 
     except (OSError, ValueError, json.JSONDecodeError):
-        show_message("NO VALID SAVE FOUND!")
-        return False
+        notify("NO VALID SAVE FILE!", 120)
 
 
-# =====================================================
-# DRAWING
-# =====================================================
+# ===================== PICKUPS & MISSIONS =====================
 
-def draw_bar(x, y, width, height, value, maximum, color):
-    pygame.draw.rect(screen, (75, 25, 38), (x, y, width, height))
-    fill = int(width * max(0, value) / max(1, maximum))
+def collect_items():
+    global health, ammo, energy, collected_data, score, player_speed
 
-    if fill > 0:
-        pygame.draw.rect(screen, color, (x, y, fill, height))
+    for item in items[:]:
+        if player.colliderect(item["rect"]):
+            kind = item["type"]
+
+            if kind == "data":
+                collected_data += 1
+                score += 50
+                notify(f"DATA FRAGMENT FOUND: {collected_data}", 100)
+
+            elif kind == "ammo":
+                ammo += 6
+                notify("AMMO +6", 70)
+
+            elif kind == "health":
+                health = min(100, health + 30)
+                notify("HEALTH RESTORED", 70)
+
+            items.remove(item)
+            play_sound("pickup")
+            spawn_particles(item["rect"].center, GREEN, 10)
 
 
-def draw_maze():
-    for y in range(ROWS):
-        for x in range(COLS):
-            rect = pygame.Rect(
-                x * TILE, y * TILE + HUD, TILE, TILE
-            )
+def use_powerup(number):
+    global health, player_speed, energy
 
-            if maze[y][x] == 1:
-                pygame.draw.rect(screen, WALL, rect)
-                pygame.draw.rect(screen, (53, 62, 78), rect, 1)
-            else:
-                pygame.draw.rect(screen, FLOOR, rect)
-                pygame.draw.rect(screen, (25, 31, 41), rect, 1)
+    if number == 1 and powerups.get("health", 0) > 0:
+        health = min(100, health + 40)
+        powerups["health"] -= 1
+        notify("MEDKIT USED")
+
+    elif number == 2 and powerups.get("speed", 0) > 0:
+        player_speed = 5.0
+        powerups["speed"] -= 1
+        notify("SPEED BOOST ACTIVATED", 180)
+
+    elif number == 3 and powerups.get("flashlight", 0) > 0:
+        energy = min(100, energy + 35)
+        powerups["flashlight"] -= 1
+        notify("ENERGY CELL USED")
+
+
+def mission_text():
+    if boss_mode and boss:
+        return "MISSION: DEFEAT THE BOSS"
+    if len(enemies) > 0:
+        return "MISSION: SURVIVE THE HUNTER"
+    if collected_data < 3:
+        return f"MISSION: COLLECT DATA ({collected_data}/3)"
+    return "MISSION: REACH THE EXIT"
+
+
+# ===================== RENDERING =====================
+
+def draw_text(text, x, y, color=WHITE, font=FONT):
+    screen.blit(font.render(text, True, color), (x, y))
 
 
 def draw_hud():
-    pygame.draw.rect(screen, (8, 12, 21), (0, 0, WIDTH, HUD))
+    pygame.draw.rect(screen, (12, 15, 23), (0, 0, WIDTH, HUD_HEIGHT))
+    pygame.draw.line(screen, GRAY, (0, HUD_HEIGHT - 2), (WIDTH, HUD_HEIGHT - 2), 2)
 
-    screen.blit(font.render("SILENT SIGNAL", True, CYAN), (12, 7))
-    screen.blit(small.render(f"CHAPTER {level}", True, WHITE), (12, 34))
-    screen.blit(
-        small.render(f"KEYS {keys_collected}/{total_keys}", True, GOLD),
-        (12, 56)
-    )
-    screen.blit(
-        small.render(f"DATA {data_collected}/{total_data}", True, BLUE),
-        (12, 76)
-    )
+    draw_text("SILENT SIGNAL", 16, 10, BLUE, BIG)
+    draw_text(f"LVL {level}", 250, 14, YELLOW)
+    draw_text(f"SCORE {score}", 340, 14, WHITE)
+    draw_text(f"AMMO {ammo}", 485, 14, YELLOW)
+    draw_text(f"DATA {collected_data}/3", 600, 14, GREEN)
 
-    screen.blit(small.render("HEALTH", True, WHITE), (190, 8))
-    draw_bar(250, 10, 110, 12, player_health, 100, GREEN)
+    pygame.draw.rect(screen, (55, 20, 25), (16, 49, 160, 14))
+    pygame.draw.rect(screen, RED, (16, 49, 160 * max(0, health) / 100, 14))
+    draw_text("HP", 180, 45, WHITE, SMALL)
 
-    screen.blit(small.render("BOSS", True, WHITE), (380, 8))
-    draw_bar(425, 10, 120, 12, boss_health, boss_max_health, PURPLE)
+    pygame.draw.rect(screen, (20, 35, 55), (230, 49, 160, 14))
+    pygame.draw.rect(screen, BLUE, (230, 49, 160 * max(0, energy) / 100, 14))
+    draw_text("ENERGY", 395, 45, WHITE, SMALL)
 
-    screen.blit(small.render("ENERGY", True, WHITE), (565, 8))
-    draw_bar(630, 10, 100, 12, player_energy, 100, CYAN)
-
-    screen.blit(small.render("INVENTORY", True, CYAN), (190, 35))
-    screen.blit(
-        small.render(f"1 Health x{inventory['health']}", True, GREEN),
-        (285, 35)
-    )
-    screen.blit(
-        small.render(f"2 Speed x{inventory['speed']}", True, CYAN),
-        (425, 35)
-    )
-    screen.blit(
-        small.render(f"3 Light x{inventory['flashlight']}", True, GOLD),
-        (555, 35)
-    )
-
-    screen.blit(
-        small.render(
-            "SPACE Sonar | F Pulse | P Save | L Load | M Sound | ESC Menu",
-            True, ORANGE
-        ),
-        (190, 63)
-    )
-
-    status = "ON" if sound_on else "OFF"
-    screen.blit(
-        small.render(f"SOUND: {status} | {current_mission()}", True, WHITE),
-        (190, 82)
-    )
+    draw_text(mission_text(), 510, 47, GREEN, SMALL)
 
 
-def draw_powerups():
-    for item in powerups:
-        kind = item["kind"]
-        color = {
-            "health": GREEN,
-            "speed": CYAN,
-            "flashlight": GOLD
-        }[kind]
-
-        pygame.draw.rect(
-            screen, color, item["rect"], border_radius=4
-        )
-
-        letter = {
-            "health": "H",
-            "speed": "S",
-            "flashlight": "F"
-        }[kind]
-
-        label = small.render(letter, True, BLACK)
-        screen.blit(label, (
-            item["rect"].centerx - label.get_width() // 2,
-            item["rect"].centery - label.get_height() // 2
-        ))
-
-
-def draw_game():
+def draw_world():
     screen.fill(BLACK)
-    draw_maze()
 
-    for key in keys:
-        pygame.draw.circle(screen, GOLD, key.center, 6)
-        pygame.draw.circle(screen, WHITE, key.center, 2)
+    # Floor grid
+    for x in range(0, WIDTH, TILE):
+        for y in range(HUD_HEIGHT, HEIGHT, TILE):
+            pygame.draw.rect(screen, FLOOR, (x, y, TILE, TILE))
+            pygame.draw.rect(screen, (31, 37, 46), (x, y, TILE, TILE), 1)
 
-    for data in data_files:
-        pygame.draw.rect(screen, BLUE, data, border_radius=3)
-        pygame.draw.rect(screen, WHITE, data, 1, border_radius=3)
+    for wall in walls:
+        pygame.draw.rect(screen, WALL, wall)
+        pygame.draw.rect(screen, (80, 90, 105), wall, 2)
 
-    draw_powerups()
+    pygame.draw.rect(screen, GREEN, exit_rect)
+    pygame.draw.rect(screen, WHITE, exit_rect, 2)
 
-    exit_color = (
-        GREEN if keys_collected == total_keys
-        and data_collected == total_data and boss_health <= 0
-        else RED
-    )
+    for item in items:
+        color = {
+            "data": BLUE,
+            "ammo": YELLOW,
+            "health": GREEN,
+        }[item["type"]]
 
-    pygame.draw.rect(screen, exit_color, exit_rect, border_radius=4)
-    pygame.draw.rect(screen, WHITE, exit_rect, 2, border_radius=4)
+        pygame.draw.rect(screen, color, item["rect"])
+        pygame.draw.rect(screen, WHITE, item["rect"], 1)
 
-    if boss_health > 0:
-        boss_rect = pygame.Rect(
-            int(boss_x - 15), int(boss_y - 15), 30, 30
+    for enemy in enemies:
+        rect = enemy["rect"]
+        color = {
+            "patrol": (160, 70, 80),
+            "investigate": YELLOW,
+            "chase": RED,
+            "search": PURPLE,
+        }.get(enemy["state"], RED)
+
+        pygame.draw.rect(screen, color, rect)
+        pygame.draw.circle(screen, WHITE, (rect.centerx, rect.centery), 4)
+
+        # Enemy state indicator
+        if enemy["state"] == "chase":
+            pygame.draw.circle(screen, RED, rect.center, 16, 1)
+
+    if boss:
+        pygame.draw.rect(screen, PURPLE, boss["rect"])
+        pygame.draw.rect(screen, RED, (boss["rect"].x, boss["rect"].y - 10, 40, 5))
+        pygame.draw.rect(
+            screen, GREEN,
+            (boss["rect"].x, boss["rect"].y - 10, 40 * max(0, boss_health) / 100, 5)
         )
 
-        color = ORANGE if boss_stun > 0 else PURPLE
-        pygame.draw.rect(screen, color, boss_rect, border_radius=6)
-        pygame.draw.rect(screen, RED, boss_rect, 2, border_radius=6)
+    for bullet in bullets:
+        pygame.draw.circle(screen, YELLOW, (int(bullet["x"]), int(bullet["y"])), 4)
 
-        pygame.draw.circle(
-            screen, WHITE, (int(boss_x - 6), int(boss_y - 4)), 3
-        )
-        pygame.draw.circle(
-            screen, WHITE, (int(boss_x + 6), int(boss_y - 4)), 3
-        )
+    # Player
+    pygame.draw.rect(screen, BLUE, player)
+    pygame.draw.rect(screen, WHITE, player, 2)
 
-    pygame.draw.rect(screen, CYAN, player, border_radius=5)
-    pygame.draw.rect(screen, WHITE, player, 2, border_radius=5)
+    mx, my = pygame.mouse.get_pos()
+    pygame.draw.line(screen, BLUE, player.center, (mx, my), 1)
 
-    if sonar_active:
-        pygame.draw.circle(
-            screen, CYAN, player.center, int(sonar_radius), 2
-        )
+    draw_particles()
+    draw_sonar()
 
-    # Darkness and flashlight
+    # Simple flashlight vignette
     darkness = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-    darkness.fill((0, 0, 0, 238))
+    darkness.fill((0, 0, 0, 170))
 
-    radius = 225 if flashlight_timer > 0 else 115
-    pygame.draw.circle(
-        darkness, (0, 0, 0, 0), player.center, radius
-    )
-
-    if boss_health > 0:
-        pygame.draw.circle(
-            darkness, (0, 0, 0, 0),
-            (int(boss_x), int(boss_y)), 36
-        )
+    if powerups.get("flashlight", 0) > 0:
+        pygame.draw.circle(darkness, (0, 0, 0, 0), player.center, 135)
 
     screen.blit(darkness, (0, 0))
 
-    if flash_timer > 0:
-        overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-        overlay.fill((150, 0, 15, 65))
-        screen.blit(overlay, (0, 0))
+    # Draw the player over darkness
+    pygame.draw.rect(screen, BLUE, player)
+    pygame.draw.rect(screen, WHITE, player, 2)
 
     draw_hud()
 
-    if message_timer > 0:
-        label = font.render(message, True, GOLD)
-        screen.blit(
-            label,
-            (WIDTH // 2 - label.get_width() // 2, HEIGHT - 26)
-        )
-
-    # Jumpscare
-    if jumpscare_timer > 0:
-        overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-        overlay.fill((60, 0, 10, 190))
-        screen.blit(overlay, (0, 0))
-
-        face = pygame.Rect(
-            WIDTH // 2 - 115, HEIGHT // 2 - 120, 230, 240
-        )
-
-        pygame.draw.ellipse(screen, (15, 0, 5), face)
-        pygame.draw.ellipse(screen, RED, face, 5)
-
-        pygame.draw.ellipse(
-            screen, WHITE, (face.x + 35, face.y + 55, 55, 55)
-        )
-        pygame.draw.ellipse(
-            screen, WHITE, (face.x + 140, face.y + 55, 55, 55)
-        )
-
-        pygame.draw.circle(
-            screen, RED, (face.x + 62, face.y + 82), 15
-        )
-        pygame.draw.circle(
-            screen, RED, (face.x + 167, face.y + 82), 15
-        )
-
-        pygame.draw.ellipse(
-            screen, RED, (face.x + 55, face.y + 135, 120, 65)
-        )
-
-        pygame.draw.rect(
-            screen, WHITE, (face.x + 75, face.y + 140, 20, 28)
-        )
-        pygame.draw.rect(
-            screen, WHITE, (face.x + 130, face.y + 140, 20, 28)
-        )
+    if message_timer > 0 and message:
+        label = FONT.render(message, True, YELLOW)
+        screen.blit(label, label.get_rect(center=(WIDTH // 2, HEIGHT - 25)))
 
 
-def draw_center(title, subtitle, lines):
+def draw_menu():
+    screen.fill((5, 8, 15))
+    draw_text("SILENT SIGNAL", 230, 155, BLUE, TITLE)
+    draw_text("A SURVIVAL HORROR EXPERIENCE", 270, 220, GRAY)
+
+    options = [
+        "ENTER - START GAME",
+        "L - LOAD GAME",
+        "M - TOGGLE SOUND",
+        "ESC - QUIT",
+    ]
+
+    for i, option in enumerate(options):
+        draw_text(option, 340, 330 + i * 42, WHITE)
+
+    draw_text("WATCH THE SHADOWS. LISTEN FOR FOOTSTEPS.", 225, 570, RED)
+
+
+def draw_game_over():
     screen.fill(BLACK)
-
-    title_img = big.render(title, True, CYAN)
-    screen.blit(
-        title_img,
-        (WIDTH // 2 - title_img.get_width() // 2, 175)
-    )
-
-    sub = font.render(subtitle, True, WHITE)
-    screen.blit(
-        sub, (WIDTH // 2 - sub.get_width() // 2, 250)
-    )
-
-    for i, line in enumerate(lines):
-        img = small.render(line, True, GOLD)
-        screen.blit(
-            img,
-            (WIDTH // 2 - img.get_width() // 2, 315 + i * 26)
-        )
+    draw_text("SIGNAL LOST", 310, 230, RED, TITLE)
+    draw_text(f"FINAL SCORE: {score}", 390, 320, WHITE, BIG)
+    draw_text("ENTER - RETRY       ESC - MENU", 305, 400, YELLOW)
 
 
-# =====================================================
-# MAIN GAME LOOP
-# =====================================================
+def draw_story():
+    screen.fill(BLACK)
+    draw_text("SILENT SIGNAL", 300, 130, BLUE, TITLE)
+    draw_text(f"CHAPTER {level}", 430, 230, YELLOW, BIG)
+
+    story = [
+        "The facility has gone silent.",
+        "Something is moving in the darkness.",
+        "Collect the data and find an exit.",
+        "Avoid the hunter. Save your ammunition.",
+    ]
+
+    for i, line in enumerate(story):
+        draw_text(line, 245, 315 + i * 36, WHITE)
+
+    draw_text("PRESS ENTER TO CONTINUE", 340, 525, GREEN)
+
+
+# ===================== MAIN GAME =====================
+
+moving = False
+firing_this_frame = False
+sprinting = False
+damage_cooldown = 0
+speed_boost_timer = 0
+
+
+def start_game():
+    global game_state, level, health, energy, ammo, score
+    global collected_data, inventory, powerups, chapter_intro
+
+    level = 1
+    health = 100
+    energy = 100
+    ammo = 12
+    score = 0
+    collected_data = 0
+    inventory = ["Pulse Blaster"]
+    powerups = {"health": 1, "speed": 1, "flashlight": 1}
+    chapter_intro = True
+    new_level()
+    game_state = "story"
+
 
 running = True
+start_game()
+game_state = "menu"
 
 while running:
-    clock.tick(FPS)
+    dt = clock.tick(FPS) / 1000.0
+
+    if message_timer > 0:
+        message_timer -= 1
+
+    if sonar_timer > 0:
+        sonar_timer -= 1
+
+    if damage_cooldown > 0:
+        damage_cooldown -= 1
+
+    if speed_boost_timer > 0:
+        speed_boost_timer -= 1
+        if speed_boost_timer == 0:
+            player_speed = 3.0
+
+    firing_this_frame = False
+    sprinting = False
+    moving = False
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
 
         if event.type == pygame.KEYDOWN:
-
-            if event.key == pygame.K_m:
-                toggle_sound()
-
-            if state == "menu":
-                if event.key == pygame.K_RETURN:
-                    level = 1
-                    new_level()
-                    start_story()
-
-                elif event.key == pygame.K_l:
-                    if load_game():
-                        start_story()
-
-                elif event.key == pygame.K_ESCAPE:
+            if event.key == pygame.K_ESCAPE:
+                if game_state == "playing":
+                    game_state = "menu"
+                else:
                     running = False
 
-            elif state == "story":
-                if event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                    story_index += 1
+            if event.key == pygame.K_m:
+                muted = not muted
+                notify("SOUND ON" if not muted else "SOUND OFF")
 
-                    if story_index >= len(story_text):
-                        state = "playing"
-                        show_message("MISSION STARTED!", 100)
+            if event.key == pygame.K_l:
+                load_game()
 
-                elif event.key == pygame.K_ESCAPE:
-                    state = "menu"
+            if event.key == pygame.K_p and game_state == "playing":
+                save_game()
 
-            elif state == "playing":
-                if event.key == pygame.K_ESCAPE:
-                    state = "menu"
+            if event.key == pygame.K_RETURN:
+                if game_state == "menu":
+                    start_game()
+                elif game_state == "story":
+                    game_state = "playing"
+                elif game_state == "gameover":
+                    start_game()
+                elif game_state == "ending":
+                    game_state = "menu"
 
-                elif event.key == pygame.K_SPACE:
+            if game_state == "playing":
+                if event.key == pygame.K_SPACE:
                     use_sonar()
 
-                elif event.key == pygame.K_f:
-                    use_pulse_weapon()
+                if event.key == pygame.K_1:
+                    use_powerup(1)
 
-                elif event.key == pygame.K_1:
-                    activate_powerup(1)
+                if event.key == pygame.K_2:
+                    if powerups.get("speed", 0) > 0:
+                        powerups["speed"] -= 1
+                        player_speed = 5.0
+                        speed_boost_timer = 240
+                        notify("SPEED BOOST ACTIVATED")
+                    else:
+                        notify("NO SPEED BOOST LEFT")
 
-                elif event.key == pygame.K_2:
-                    activate_powerup(2)
+                if event.key == pygame.K_3:
+                    use_powerup(3)
 
-                elif event.key == pygame.K_3:
-                    activate_powerup(3)
+        if event.type == pygame.MOUSEBUTTONDOWN and game_state == "playing":
+            if event.button == 1:
+                firing_this_frame = True
+                fire_weapon()
 
-                elif event.key == pygame.K_p:
-                    save_game()
+    if game_state == "menu":
+        draw_menu()
 
-                elif event.key == pygame.K_l:
-                    load_game()
+    elif game_state == "story":
+        draw_story()
 
-            elif state in ("won", "lost", "ending"):
-                if event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                    if state == "won":
-                        level += 1
-                        new_level()
-                        start_story()
+    elif game_state == "playing":
+        keys = pygame.key.get_pressed()
 
-                    elif state == "lost":
-                        new_level()
-                        state = "playing"
+        dx = 0
+        dy = 0
 
-                    elif state == "ending":
-                        state = "menu"
-
-                elif event.key == pygame.K_ESCAPE:
-                    state = "menu"
-
-    if state == "playing":
-        pressed = pygame.key.get_pressed()
-        dx = dy = 0
-
-        if pressed[pygame.K_a] or pressed[pygame.K_LEFT]:
+        if keys[pygame.K_a] or keys[pygame.K_LEFT]:
             dx -= 1
-        if pressed[pygame.K_d] or pressed[pygame.K_RIGHT]:
+        if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
             dx += 1
-        if pressed[pygame.K_w] or pressed[pygame.K_UP]:
+        if keys[pygame.K_w] or keys[pygame.K_UP]:
             dy -= 1
-        if pressed[pygame.K_s] or pressed[pygame.K_DOWN]:
+        if keys[pygame.K_s] or keys[pygame.K_DOWN]:
             dy += 1
 
-        speed = player_speed * (1.65 if speed_timer > 0 else 1)
+        if dx or dy:
+            moving = True
+
+        if keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]:
+            sprinting = True
+
+        speed = player_speed * (1.5 if sprinting else 1.0)
 
         if dx and dy:
-            dx *= 0.7071
-            dy *= 0.7071
+            speed *= 0.7071
 
-        old_position = player.topleft
-        move_player(dx * speed, dy * speed)
+        move_rect(player, dx * speed, dy * speed)
 
-        # Footstep sound only when actually moving.
-        if player.topleft != old_position:
-            footstep_timer += 1
+        # Restore energy gradually
+        energy = min(100, energy + 0.025)
 
-            if footstep_timer >= 16:
-                play_sound("footstep")
-                footstep_timer = 0
-        else:
-            footstep_timer = 0
+        update_enemies(dt)
 
-        if speed_timer > 0:
-            speed_timer -= 1
+        # Boss follows player and attacks at close range
+        if boss:
+            enemy_move_toward(boss, player.center, boss["speed"])
+            boss["attack_timer"] -= 1
 
-        if flashlight_timer > 0:
-            flashlight_timer -= 1
+            if boss["rect"].colliderect(player) and boss["attack_timer"] <= 0:
+                health -= 20
+                boss["attack_timer"] = 55
+                play_sound("boss")
+                spawn_particles(player.center, RED, 20)
+                notify("BOSS ATTACK!", 90)
 
-        if sonar_cooldown > 0:
-            sonar_cooldown -= 1
+        update_bullets()
+        collect_items()
+        update_particles()
 
-        if pulse_cooldown > 0:
-            pulse_cooldown -= 1
-
-        player_energy = min(100, player_energy + 0.08)
-
-        if sonar_active:
-            sonar_radius += 10
-            if sonar_radius >= 220:
-                sonar_active = False
-
-        if message_timer > 0:
-            message_timer -= 1
-
-        if shake_timer > 0:
-            shake_timer -= 1
-
-        if flash_timer > 0:
-            flash_timer -= 1
-
-        if jumpscare_timer > 0:
-            jumpscare_timer -= 1
-
-        if jumpscare_cooldown > 0:
-            jumpscare_cooldown -= 1
-        elif random.random() < 0.001:
-            jumpscare_timer = 30
-            jumpscare_cooldown = 900
-            flash_timer = 12
-            play_sound("jumpscare")
-            show_message("SOMETHING IS WATCHING YOU...", 100)
-
-        # Collect keys
-        for key in keys[:]:
-            if player.colliderect(key):
-                keys.remove(key)
-                keys_collected += 1
-                play_sound("key")
-                show_message("ACCESS KEY RECOVERED!")
-
-        # Collect research data
-        for data in data_files[:]:
-            if player.colliderect(data):
-                data_files.remove(data)
-                data_collected += 1
-                play_sound("data")
-                show_message("RESEARCH DATA RECOVERED!")
-
-        collect_powerups()
-        update_boss()
-
+        # Mission and exit
         if player.colliderect(exit_rect):
-            if keys_collected < total_keys:
-                show_message("MISSION: FIND ALL ACCESS KEYS!", 45)
-
-            elif data_collected < total_data:
-                show_message("MISSION: RECOVER ALL RESEARCH DATA!", 45)
-
-            elif boss_health > 0:
-                show_message("MISSION: DEFEAT THE EXPERIMENT!", 45)
-
-            elif level >= 5:
-                play_sound("win")
-                state = "ending"
-
+            if boss:
+                notify("DEFEAT THE BOSS FIRST!", 90)
+            elif collected_data < 3 and level >= 2:
+                notify("COLLECT ALL 3 DATA FRAGMENTS!", 90)
             else:
-                play_sound("win")
-                state = "won"
+                level += 1
+                if level > 5:
+                    game_state = "ending"
+                    play_sound("win")
+                else:
+                    new_level()
+                    game_state = "story"
 
-    if state == "menu":
-        draw_center(
-            "SILENT SIGNAL",
-            "HORROR SURVIVAL - SOUND EDITION",
-            [
-                "ENTER: NEW STORY",
-                "L: LOAD SAVED CHAPTER",
-                "WASD / ARROWS: MOVE",
-                "SPACE: SONAR | F: PULSE WEAPON",
-                "1 HEALTH | 2 SPEED | 3 FLASHLIGHT",
-                "P: SAVE | M: SOUND ON/OFF | ESC: QUIT"
-            ]
-        )
+        if health <= 0:
+            health = 0
+            game_state = "gameover"
+            play_sound("hurt")
 
-    elif state == "story":
+        draw_world()
+
+    elif game_state == "gameover":
+        draw_game_over()
+
+    elif game_state == "ending":
         screen.fill(BLACK)
-
-        title = story_text[0]
-        title_img = big.render(title, True, RED)
-        screen.blit(
-            title_img,
-            (WIDTH // 2 - title_img.get_width() // 2, 155)
-        )
-
-        for i, line in enumerate(story_text[1:]):
-            text_img = font.render(line, True, WHITE)
-            screen.blit(
-                text_img,
-                (WIDTH // 2 - text_img.get_width() // 2, 245 + i * 35)
-            )
-
-        prompt = small.render("ENTER / SPACE: CONTINUE", True, GOLD)
-        screen.blit(
-            prompt,
-            (WIDTH // 2 - prompt.get_width() // 2, 480)
-        )
-
-    elif state == "playing":
-        draw_game()
-
-    elif state == "won":
-        draw_center(
-            "CHAPTER CLEARED",
-            f"You survived chapter {level}",
-            [
-                "All objectives completed.",
-                "ENTER / SPACE: NEXT CHAPTER",
-                "ESC: MAIN MENU"
-            ]
-        )
-
-    elif state == "lost":
-        draw_center(
-            "SIGNAL LOST",
-            f"You were caught in chapter {level}",
-            [
-                "ENTER / SPACE: RETRY CHAPTER",
-                "ESC: MAIN MENU"
-            ]
-        )
-
-    elif state == "ending":
-        draw_center(
-            "THE SIGNAL ENDS",
-            "You escaped the research facility.",
-            [
-                "The experiment is silent.",
-                "The recovered data reveals the truth.",
-                "You survived the first five chapters.",
-                "ENTER / SPACE: MAIN MENU"
-            ]
-        )
-
-    # Screen shake
-    if state == "playing" and shake_timer > 0:
-        offset_x = random.randint(-4, 4)
-        offset_y = random.randint(-4, 4)
-        frame = screen.copy()
-        screen.fill(BLACK)
-        screen.blit(frame, (offset_x, offset_y))
+        draw_text("SIGNAL RESTORED", 250, 160, GREEN, TITLE)
+        draw_text("YOU ESCAPED THE FACILITY", 300, 260, WHITE, BIG)
+        draw_text(f"FINAL SCORE: {score}", 390, 335, YELLOW)
+        draw_text("THE SILENCE WAS ONLY THE BEGINNING...", 235, 405, RED)
+        draw_text("ENTER - MAIN MENU", 385, 520, WHITE)
 
     pygame.display.flip()
 
 pygame.quit()
-sys.exit()
